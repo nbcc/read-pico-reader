@@ -180,6 +180,30 @@ static bool json_bool(const cJSON *root, const char *key) {
     return false;
 }
 
+// 登录响应里的 vid 可能是数字；按标量转成文本，供 cookie 持久化。
+// The login vid may be numeric; stringify a scalar so it can be stored as a cookie.
+static bool json_scalar_copy(const cJSON *root, const char *key, char *out, size_t cap) {
+    if (!out || cap < 2) return false;
+    out[0] = 0;
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(root, key);
+    if (!item) return false;
+    if (cJSON_IsString(item) && item->valuestring) {
+        const size_t length = strlen(item->valuestring);
+        if (!length || length >= cap) return false;
+        memcpy(out, item->valuestring, length + 1);
+        return true;
+    }
+    if (cJSON_IsNumber(item)) {
+        snprintf(out, cap, "%.0f", item->valuedouble);
+        return out[0] != 0;
+    }
+    if (cJSON_IsBool(item)) {
+        snprintf(out, cap, "%d", cJSON_IsTrue(item) ? 1 : 0);
+        return true;
+    }
+    return false;
+}
+
 /* ---- 登录 / Login ---- */
 
 static bool fetch_login_uid(char *uid, size_t cap) {
@@ -317,19 +341,17 @@ static void run_login(void) {
         // Some deployments wrap the payload in data; accept both shapes and common key names.
         const cJSON *payload = cJSON_GetObjectItemCaseSensitive(root, "data");
         if (!cJSON_IsObject(payload)) payload = root;
-        const char *vid = json_string(payload, "webLoginVid");
-        if (!vid) vid = json_string(payload, "vid");
-        if (!vid) vid = json_string(payload, "wr_vid");
-        const char *token = json_string(payload, "accessToken");
-        if (!token) token = json_string(payload, "skey");
-        if (!token) token = json_string(payload, "wr_skey");
-        const bool has_credentials = vid && vid[0] && token && token[0];
         char logic_copy[48];
         wr_utf8_copy(logic_copy, sizeof(logic_copy), logic ? logic : "");
         char vid_copy[WR_SESSION_VID_CAP];
         char token_copy[WR_SESSION_TOKEN_CAP];
-        wr_utf8_copy(vid_copy, sizeof(vid_copy), vid ? vid : "");
-        wr_utf8_copy(token_copy, sizeof(token_copy), token ? token : "");
+        bool vid_ok = json_scalar_copy(payload, "webLoginVid", vid_copy, sizeof(vid_copy));
+        if (!vid_ok) vid_ok = json_scalar_copy(payload, "vid", vid_copy, sizeof(vid_copy));
+        if (!vid_ok) vid_ok = json_scalar_copy(payload, "wr_vid", vid_copy, sizeof(vid_copy));
+        bool token_ok = json_scalar_copy(payload, "accessToken", token_copy, sizeof(token_copy));
+        if (!token_ok) token_ok = json_scalar_copy(payload, "skey", token_copy, sizeof(token_copy));
+        if (!token_ok) token_ok = json_scalar_copy(payload, "wr_skey", token_copy, sizeof(token_copy));
+        const bool has_credentials = vid_ok && token_ok;
         const bool logic_success = !strcmp(logic_copy, "LOGIN_SUCCESS");
         if (logic_success) {
             char keys[192] = {0};
@@ -341,8 +363,14 @@ static void run_login(void) {
                 if (used) keys[used++] = ',';
                 strcpy(keys + used, child->string);
             }
-            wr_debug_log("login LOGIN_SUCCESS succeed=%d vid_len=%u token_len=%u keys=%s",
-                         succeed, (unsigned)strlen(vid_copy), (unsigned)strlen(token_copy), keys);
+            const cJSON *vid_item = cJSON_GetObjectItemCaseSensitive(payload, "webLoginVid");
+            const cJSON *token_item = cJSON_GetObjectItemCaseSensitive(payload, "accessToken");
+            const cJSON *refresh_item = cJSON_GetObjectItemCaseSensitive(payload, "refreshToken");
+            wr_debug_log("login LOGIN_SUCCESS succeed=%d vid_len=%u token_len=%u vid_type=%d token_type=%d refresh_len=%u keys=%s",
+                         succeed, (unsigned)strlen(vid_copy), (unsigned)strlen(token_copy),
+                         vid_item ? vid_item->type : -1, token_item ? token_item->type : -1,
+                         refresh_item && refresh_item->valuestring ? (unsigned)strlen(refresh_item->valuestring) : 0,
+                         keys);
         }
         cJSON_Delete(root);
 
