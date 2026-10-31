@@ -698,9 +698,11 @@ static bool fetch_shard(const char *book_id, const char *chapter_uid, const char
     }
     int status = 0;
     if (!http_call("POST", endpoint, body, strlen(body), WR_JSON_ACCEPT, referer, out, cap, out_len, &status)) {
+        wr_debug_log("shard %s http failed status=%d", endpoint, status);
         *message = "下载章节内容失败";
         return false;
     }
+    wr_debug_log("shard %s status=%d len=%u", endpoint, status, (unsigned)*out_len);
     return true;
 }
 
@@ -716,10 +718,16 @@ static bool append_shard(const char *shard, size_t len, char *target, size_t cap
     const char *body = NULL;
     size_t body_len = 0;
     if (!wr_shard_body(shard, len, &body, &body_len)) {
+        char prefix[33];
+        const size_t n = len < 32 ? len : 32;
+        memcpy(prefix, shard, n);
+        prefix[n] = 0;
+        wr_debug_log("shard invalid len=%u first32=%s", (unsigned)len, prefix);
         *message = "章节内容校验失败";
         return false;
     }
     if (*used + body_len >= cap) {
+        wr_debug_log("shard overflow used=%u body=%u cap=%u", (unsigned)*used, (unsigned)body_len, (unsigned)cap);
         *message = "章节内容过大";
         return false;
     }
@@ -732,6 +740,7 @@ static bool cache_read_chapter(const wr_shelf_record_t *book, const char *chapte
                                const char *referer, bool *txt_mode, size_t *chapter_len, const char **message) {
     size_t len = 0;
     int status = 0;
+    wr_debug_log("chapter begin uid_len=%u txt=%d", (unsigned)strlen(chapter_uid), *txt_mode);
 
     if (!*txt_mode) {
         char body[WR_CONTENT_JSON_CAP];
@@ -742,9 +751,11 @@ static bool cache_read_chapter(const wr_shelf_record_t *book, const char *chapte
         }
         if (!http_call("POST", "/web/book/chapter/e_0", body, strlen(body), WR_JSON_ACCEPT, referer,
                        s_http_body, WR_HTTP_BODY_MAX, &len, &status)) {
+            wr_debug_log("chapter e_0 http failed status=%d", status);
             *message = "下载章节内容失败";
             return false;
         }
+        wr_debug_log("chapter e_0 status=%d len=%u", status, (unsigned)len);
         if (len >= 2 && s_http_body[0] == '{' && contains_bytes(s_http_body, len, "\"bookId\"", 8)) {
             *txt_mode = true;
         }
@@ -1035,6 +1046,8 @@ static bool cache_book_inner(const wr_shelf_record_t *book, read_pico_weread_err
             return false;
         }
         size_t chapter_len = 0;
+        wr_debug_log("cache chapter i=%u uid_len=%u title_len=%u",
+                     (unsigned)i, (unsigned)strlen(chapter->uid), (unsigned)strlen(chapter->title));
         if (!cache_read_chapter(book, chapter->uid, psvts, reader_referer, &txt_mode, &chapter_len, &reason)) {
             snprintf(message, message_cap, "%s", reason);
             return false;
