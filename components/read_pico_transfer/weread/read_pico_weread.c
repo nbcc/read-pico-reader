@@ -314,9 +314,15 @@ static void run_login(void) {
         }
         const bool succeed = json_bool(root, "succeed");
         const char *logic = json_string(root, "logicCode");
-        const char *vid = json_string(root, "webLoginVid");
-        if (!vid) vid = json_string(root, "vid");
-        const char *token = json_string(root, "accessToken");
+        // Some deployments wrap the payload in data; accept both shapes and common key names.
+        const cJSON *payload = cJSON_GetObjectItemCaseSensitive(root, "data");
+        if (!cJSON_IsObject(payload)) payload = root;
+        const char *vid = json_string(payload, "webLoginVid");
+        if (!vid) vid = json_string(payload, "vid");
+        if (!vid) vid = json_string(payload, "wr_vid");
+        const char *token = json_string(payload, "accessToken");
+        if (!token) token = json_string(payload, "skey");
+        if (!token) token = json_string(payload, "wr_skey");
         const bool has_credentials = vid && vid[0] && token && token[0];
         char logic_copy[48];
         wr_utf8_copy(logic_copy, sizeof(logic_copy), logic ? logic : "");
@@ -324,9 +330,23 @@ static void run_login(void) {
         char token_copy[WR_SESSION_TOKEN_CAP];
         wr_utf8_copy(vid_copy, sizeof(vid_copy), vid ? vid : "");
         wr_utf8_copy(token_copy, sizeof(token_copy), token ? token : "");
+        const bool logic_success = !strcmp(logic_copy, "LOGIN_SUCCESS");
+        if (logic_success) {
+            char keys[192] = {0};
+            const cJSON *child = NULL;
+            cJSON_ArrayForEach(child, root) {
+                if (!child->string) continue;
+                size_t used = strlen(keys);
+                if (used + strlen(child->string) + 2 >= sizeof(keys)) break;
+                if (used) keys[used++] = ',';
+                strcpy(keys + used, child->string);
+            }
+            wr_debug_log("login LOGIN_SUCCESS succeed=%d vid_len=%u token_len=%u keys=%s",
+                         succeed, (unsigned)strlen(vid_copy), (unsigned)strlen(token_copy), keys);
+        }
         cJSON_Delete(root);
 
-        if (succeed && has_credentials) {
+        if ((succeed || logic_success) && has_credentials) {
             clear_qr();
             wr_debug_log("login success vid_len=%u token_len=%u",
                          (unsigned)strlen(vid_copy), (unsigned)strlen(token_copy));
