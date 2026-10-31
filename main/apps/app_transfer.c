@@ -171,7 +171,7 @@ static void prepare_qr(void) {
         : ui_wifi_qr_prepare(s_status.ssid, READ_PICO_TRANSFER_PASSWORD);
 }
 
-typedef enum { TRANSFER_METHODS, TRANSFER_HOME, TRANSFER_NETWORKS, TRANSFER_PASSWORD } transfer_view_t;
+typedef enum { TRANSFER_METHODS, TRANSFER_HOME, TRANSFER_NETWORKS, TRANSFER_PASSWORD, TRANSFER_WEREAD } transfer_view_t;
 #define NETWORK_ROWS 4
 #define PASSWORD_MAX 64
 static transfer_view_t s_view;
@@ -181,11 +181,36 @@ static bool s_scan_pending, s_network_connect_pending, s_saved_configured, s_pas
 static char s_saved_ssid[33], s_password[PASSWORD_MAX + 1], s_network_message[96], s_method_message[96];
 static ui_text_edit_t s_password_input;
 
+/* 微信读书视图状态：只保存页面快照与一次性标志，业务状态在组件里。 */
+/* WeRead view state: page snapshots and one-shot flags; the component owns the real state. */
+static read_pico_weread_status_t s_weread;
+static uint32_t s_weread_revision;
+static char s_weread_qr[192];
+static char s_weread_message[96];
+static bool s_weread_started, s_weread_accepted;
+
+// 书架每页行数与当前页快照；绘制只读快照，stat 只发生在 tick 里。
+// Shelf rows per page and the current-page snapshot; drawing reads it, stat happens in tick.
+#define WR_SHELF_ROWS 7
+static read_pico_weread_shelf_item_t s_shelf_rows[WR_SHELF_ROWS];
+static unsigned s_shelf_row_count, s_shelf_page, s_shelf_pages;
+static uint8_t s_weread_bucket;
+static bool s_shelf_rows_valid;
+
 static esp_err_t s_scan_error;
 
 static void render(app_ctx_t* ctx, uint8_t* fb);
 static void stop_session(void);
 static bool stop_upload_if_idle(void);
+static uint64_t free_bytes(void* arg);
+static void weread_enter(void);
+static void weread_leave(void);
+static app_redraw_t weread_tick(app_ctx_t* ctx);
+static app_redraw_t weread_gesture(app_ctx_t* ctx, const ui_gesture_event_t* ev);
+static void draw_weread(uint8_t* fb);
+static void weread_shelf_sync(void);
+static EpdRect weread_progress_rect(int row);
+static int weread_caching_row(void);
 
 static void transfer_header(uint8_t *fb, const char *title, const char *subtitle) {
     ui_nav_status(fb);
@@ -210,36 +235,454 @@ static EpdRect method_control_rect(int id) {
 static void draw_methods(uint8_t *fb) {
     ui_clear_page(fb);
     ui_fill_rect_fast((EpdRect){0, 0, UI_LOCK_WIDTH, transfer_content_end()}, 0xe0, fb);
-    transfer_header(fb, "Wifi/热点传书", NULL);
+    transfer_header(fb, "传书方式", NULL);
     ui_text(fb, 42, 180, 21, "选择方式", EPD_DRAW_ALIGN_LEFT, false);
-    EpdRect card = {36, 224, 612, 224};
+    EpdRect card = {36, 224, 612, 448};
     ui_fill_round_rect(fb, card, 24, UI_GRAY_WHITE);
     ui_draw_round_rect(fb, card, 24, 0x60);
-    ui_draw_round_rect(fb, (EpdRect){37, 225, 610, 222}, 23, 0x60);
-    static const char *titles[] = {"WiFi传书", "热点传书"};
+    ui_draw_round_rect(fb, (EpdRect){37, 225, 610, 446}, 23, 0x60);
+    static const char *titles[] = {"WiFi传书", "热点传书", "USB传输", "微信读书"};
     static const char *details[] = {
         "与手机或电脑连接同一个无线网络",
-        "由墨水屏创建临时网络，离线也能传书"
+        "由墨水屏创建临时网络，离线也能传书",
+        "用数据线连接电脑，直接读写存储卡",
+        "登录后把书架上的书缓存到本地"
     };
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < 4; ++i) {
         EpdRect row = method_control_rect(i);
         if (s_pressed == i) ui_draw_pressed_round_rect(fb, row, 0);
         if (i) ui_fill_rect_fast((EpdRect){68, row.y, 548, 2}, 0x80, fb);
         int cy = row.y + row.height / 2;
         if (i == 0) ui_nav_wifi_icon(fb, 72, cy, 30, 0x6a);
         else if (i == 1) ui_draw_icon(fb, 72, cy, 48, UI_ICON_RADIO_TOWER, 0x6a);
+        // USB 暂无 Lucide 掩模（生成器需 Pillow>=11.3），先用文字徽标占位。
+        // No USB mask is vendored yet (the generator needs Pillow >= 11.3); use a text badge.
+        else if (i == 2) ui_text_vc(fb, 72, cy, 22, "USB", EPD_DRAW_ALIGN_CENTER, false);
+        else ui_draw_icon(fb, 72, cy, 48, UI_ICON_BOOK_OPEN, 0x6a);
         ui_text(fb, 112, row.y + 21, 27, titles[i], EPD_DRAW_ALIGN_LEFT, false);
         ui_text(fb, 112, row.y + 64, 19, details[i], EPD_DRAW_ALIGN_LEFT, false);
         ui_text_vc(fb, 617, cy, 29, "›", EPD_DRAW_ALIGN_CENTER, false);
     }
     if (s_method_message[0]) {
-        ui_fill_round_rect(fb, (EpdRect){36, 478, 612, 76}, 20, 0xd8);
-        ui_text_vc(fb, 342, 516, 20, s_method_message, EPD_DRAW_ALIGN_CENTER, false);
+        ui_fill_round_rect(fb, (EpdRect){36, 700, 612, 76}, 20, 0xd8);
+        ui_text_vc(fb, 342, 738, 20, s_method_message, EPD_DRAW_ALIGN_CENTER, false);
     }
-    ui_text(fb, 42, 594, 19, "浏览器传书支持 EPUB、TXT、字体和图片文件。", EPD_DRAW_ALIGN_LEFT, false);
-    ui_text(fb, 42, 634, 18, "传输完成后，新内容会自动出现在书架或字体列表。", EPD_DRAW_ALIGN_LEFT, false);
+    ui_text(fb, 42, 810, 19, "浏览器传书支持 EPUB、TXT、字体和图片文件。", EPD_DRAW_ALIGN_LEFT, false);
+    ui_text(fb, 42, 850, 18, "传输完成后，新内容会自动出现在书架或字体列表。", EPD_DRAW_ALIGN_LEFT, false);
     transfer_navigation(fb,2);
 }
+
+/* ---- 微信读书 / WeRead source ---- */
+
+// 动作按钮：所有子状态共用同一块区域，避免每屏各写一套命中框。
+// One action button shared by every sub-state so hit testing cannot drift from drawing.
+static EpdRect weread_action_rect(void) { return (EpdRect){60, 940, 564, 96}; }
+
+static void weread_clip(char* text, int px, int width) {
+    while (*text && ttf_text_width_px(px, text) > width) {
+        size_t n = strlen(text) - 1;
+        while (n && ((unsigned char)text[n] & 0xc0) == 0x80) --n;
+        text[n] = 0;
+    }
+}
+
+static bool weread_start_session(void) {
+    if (!s_status.wifi_configured) {
+        snprintf(s_weread_message, sizeof(s_weread_message), "请先在「WiFi传书」里连接网络");
+        return false;
+    }
+    if (!read_pico_transfer_try_stop_if_idle()) {
+        snprintf(s_weread_message, sizeof(s_weread_message), "传输正在结束，请稍后再试");
+        return false;
+    }
+    stop_session();
+    ttf_font_cache_clear();
+    const esp_err_t root_err = book_store_upload_root(&s_root);
+    if (root_err != ESP_OK) {
+        snprintf(s_weread_message, sizeof(s_weread_message), "未找到可写的书库目录");
+        return false;
+    }
+    if (s_root.is_flash) {
+        snprintf(s_weread_message, sizeof(s_weread_message), "请插入存储卡后再使用微信读书");
+        return false;
+    }
+    s_media_lost = false;
+    read_pico_transfer_cfg_t cfg = {
+        .mode = READ_PICO_TRANSFER_MODE_STA,
+        .source = READ_PICO_TRANSFER_SOURCE_WEREAD,
+        .root_dir = s_root.path,
+        .is_flash = s_root.is_flash,
+        .file_limit = book_store_file_limit(&s_root),
+        .free_bytes_cb = free_bytes,
+        .free_bytes_ctx = &s_root,
+        .file_changed_cb = book_progress_forget,
+        .file_deleted_cb = transfer_file_deleted,
+        .file_moved_cb = transfer_file_moved,
+        .wallpaper_set_cb = transfer_set_wallpaper,
+        .signature_get_cb = transfer_signature_get,
+        .signature_set_cb = transfer_signature_set,
+    };
+    const esp_err_t err = read_pico_transfer_start(&cfg);
+    s_session_started = err == ESP_OK;
+    read_pico_transfer_get_status(&s_status);
+    if (err != ESP_OK) {
+        s_status.state = READ_PICO_TRANSFER_ERROR;
+        s_status.last_error = err;
+        snprintf(s_weread_message, sizeof(s_weread_message), "连接启动失败，请检查网络设置");
+        return false;
+    }
+    s_weread_revision = 0;
+    memset(&s_weread, 0, sizeof(s_weread));
+    return true;
+}
+
+// 从方式列表进入 USB：不再走文件页的直达入口，返回键回到本列表。
+// Enter USB from the method list; the back key returns here instead of leaving the page.
+static void enter_usb_from_methods(void) {
+    read_pico_sd_info_t usb_sd = {0};
+    if (read_pico_sd_get_info(&usb_sd) == ESP_OK) s_usb_capacity_bytes = usb_sd.capacity_bytes;
+    s_usb_entry = true;
+    s_direct_entry = false;
+    s_view = TRANSFER_HOME;
+    s_usb_start_pending = true;
+    snprintf(s_usb_message, sizeof(s_usb_message), "正在卸载本机 TF 卡并启动 USB…");
+}
+
+static void weread_enter(void) {
+    s_pressed = -1;
+    s_weread_revision = 0;
+    memset(&s_weread, 0, sizeof(s_weread));
+    s_weread_qr[0] = 0;
+    s_weread_message[0] = 0;
+    s_weread_started = false;
+    s_shelf_page = 0;
+    s_shelf_pages = 1;
+    s_shelf_row_count = 0;
+    s_shelf_rows_valid = false;
+    s_weread_bucket = 0;
+    ui_wifi_qr_clear();
+    s_weread_accepted = read_pico_transfer_weread_disclaimer_accepted();
+    s_view = TRANSFER_WEREAD;
+    if (s_weread_accepted) s_weread_started = weread_start_session();
+}
+
+static void weread_leave(void) {
+    read_pico_transfer_weread_cancel();
+    if (s_weread_started) {
+        stop_session();
+        s_weread_started = false;
+    }
+    ui_wifi_qr_clear();
+    s_weread_qr[0] = 0;
+    s_weread_message[0] = 0;
+    s_shelf_page = 0;
+    s_shelf_pages = 1;
+    s_shelf_row_count = 0;
+    s_shelf_rows_valid = false;
+    s_weread_bucket = 0;
+    s_pressed = -1;
+    s_view = TRANSFER_METHODS;
+}
+
+static app_redraw_t weread_tick(app_ctx_t* ctx) {
+    (void)ctx;
+    if (!s_weread_started) return APP_REDRAW_NONE;
+    read_pico_transfer_service_poll();
+    read_pico_transfer_status_t transfer_next = {0};
+    read_pico_transfer_get_status(&transfer_next);
+    const bool network_changed = transfer_next.network_ready != s_status.network_ready ||
+                                 transfer_next.state != s_status.state;
+    s_status = transfer_next;
+
+    read_pico_weread_status_t next = {0};
+    read_pico_transfer_weread_get_status(&next);
+    const bool state_changed = next.state != s_weread.state;
+    const bool stage_changed = next.stage != s_weread.stage;
+    const bool book_changed = strcmp(next.book_id, s_weread.book_id) != 0;
+    const bool bucket_changed = (uint8_t)(next.percent / 5) != s_weread_bucket;
+    bool changed = next.revision != s_weread_revision;
+    s_weread = next;
+    s_weread_revision = next.revision;
+    // 缓存中按 5% 与阶段节流，避免每章一次局部刷新拖慢下载。
+    // Throttle to 5% buckets and stage changes; per-chapter refreshes would slow the download.
+    if (next.state == RW_CACHING) {
+        if (!state_changed && !stage_changed && !book_changed && !bucket_changed && !network_changed)
+            return APP_REDRAW_NONE;
+        s_weread_bucket = (uint8_t)(next.percent / 5);
+    }
+
+    const bool qr_state = next.state == RW_QR || next.state == RW_WAIT_SCAN;
+    if (qr_state && next.qr_url[0] && strcmp(next.qr_url, s_weread_qr)) {
+        if (ui_wifi_qr_prepare_url(next.qr_url)) {
+            snprintf(s_weread_qr, sizeof(s_weread_qr), "%s", next.qr_url);
+            changed = true;
+        }
+    } else if (!qr_state && s_weread_qr[0]) {
+        ui_wifi_qr_clear();
+        s_weread_qr[0] = 0;
+        changed = true;
+    }
+    if (next.state == RW_SHELF && !next.loading && (changed || !s_shelf_rows_valid)) {
+        weread_shelf_sync();
+        changed = true;
+    }
+    if (!changed && !network_changed) return APP_REDRAW_NONE;
+    // 只有百分比/阶段变化时重画 framebuffer，但只推该行的进度块（DU）。
+    // On a pure percent/stage change repaint the framebuffer but push only the row's progress block.
+    if (next.state == RW_CACHING && !state_changed && !book_changed && !network_changed) {
+        const int row = weread_caching_row();
+        if (row >= 0) {
+            render(ctx, ctx->fb);
+            s_area = weread_progress_rect(row);
+            s_settle = stage_changed || (s_weread_bucket % 4 == 0);
+            return APP_REDRAW_AREA;
+        }
+    }
+    return APP_REDRAW_PAGE;
+}
+
+static app_redraw_t weread_action(void) {
+    if (!s_weread_accepted) {
+        if (read_pico_transfer_weread_accept_disclaimer() != ESP_OK) {
+            snprintf(s_weread_message, sizeof(s_weread_message), "无法保存确认状态，请检查存储");
+            return APP_REDRAW_PAGE;
+        }
+        s_weread_accepted = true;
+        s_weread_started = weread_start_session();
+        return APP_REDRAW_PAGE;
+    }
+    if (!s_weread_started) {
+        s_weread_started = weread_start_session();
+        return APP_REDRAW_PAGE;
+    }
+    if (s_weread.state == RW_ERROR) {
+        read_pico_transfer_weread_cancel();
+        // 有会话就重试书架，没有才重新扫码；避免一次网络抖动就逼用户重扫。
+        // Retry the shelf when a session exists; only re-scan when it is gone.
+        if (s_weread.logged_in) (void)read_pico_transfer_weread_shelf();
+        else (void)read_pico_transfer_weread_login();
+        return APP_REDRAW_PAGE;
+    }
+    if (s_weread.state == RW_SHELF) {
+        if (s_weread.logged_in) (void)read_pico_transfer_weread_shelf();
+        else (void)read_pico_transfer_weread_login();
+        return APP_REDRAW_PAGE;
+    }
+    if (s_weread.state == RW_CACHING) {
+        (void)read_pico_transfer_weread_cancel();
+        return APP_REDRAW_PAGE;
+    }
+    weread_leave();
+    return APP_REDRAW_PAGE;
+}
+
+static EpdRect weread_row_rect(int row) { return (EpdRect){36, 210 + row * 88, 612, 84}; }
+
+// 行内进度只占右侧一块；局部刷新推这里，不动整页。
+// The in-row progress owns only the right-hand block; partial updates push just this area.
+static EpdRect weread_progress_rect(int row) {
+    const EpdRect line = weread_row_rect(row);
+    return (EpdRect){line.x + line.width - 240, line.y + 12, 216, 56};
+}
+
+static int weread_caching_row(void) {
+    for (unsigned i = 0; i < s_shelf_row_count; ++i) {
+        if (!strcmp(s_shelf_rows[i].book_id, s_weread.book_id)) return (int)i;
+    }
+    return -1;
+}
+static EpdRect weread_prev_rect(void) { return (EpdRect){36, 840, 120, 64}; }
+static EpdRect weread_next_rect(void) { return (EpdRect){528, 840, 120, 64}; }
+
+static void weread_shelf_sync(void) {
+    const unsigned count = read_pico_transfer_weread_shelf_count();
+    s_shelf_pages = count ? (count + WR_SHELF_ROWS - 1) / WR_SHELF_ROWS : 1;
+    if (s_shelf_page >= s_shelf_pages) s_shelf_page = s_shelf_pages - 1;
+    memset(s_shelf_rows, 0, sizeof(s_shelf_rows));
+    s_shelf_row_count = 0;
+    const unsigned start = s_shelf_page * WR_SHELF_ROWS;
+    for (unsigned i = 0; i < WR_SHELF_ROWS; ++i) {
+        if (start + i >= count) break;
+        if (read_pico_transfer_weread_shelf_item(start + i, &s_shelf_rows[i])) ++s_shelf_row_count;
+    }
+    s_shelf_rows_valid = true;
+}
+
+static void weread_text_center(uint8_t* fb, int y, int px, const char* text) {
+    char line[128];
+    snprintf(line, sizeof(line), "%s", text ? text : "");
+    weread_clip(line, px, 600);
+    ui_text_vc(fb, UI_LOCK_WIDTH / 2, y, px, line, EPD_DRAW_ALIGN_CENTER, false);
+}
+
+static void draw_weread(uint8_t* fb) {
+    ui_clear_page(fb);
+    ui_fill_rect_fast((EpdRect){0, 0, UI_LOCK_WIDTH, transfer_content_end()}, 0xe0, fb);
+    transfer_header(fb, "微信读书", NULL);
+
+    if (!s_weread_accepted) {
+        ui_text(fb, 42, 186, 24, "使用前请确认", EPD_DRAW_ALIGN_LEFT, false);
+        static const char* notes[] = {
+            "这是非官方功能，与微信读书官方无关。",
+            "登录后设备会读取你的书架，并把选中的书缓存为本地 EPUB。",
+            "接口可能随时失效，账号与数据风险由你自行承担。",
+            "会话保存在本机，退出登录会清除。",
+        };
+        for (int i = 0; i < 4; ++i) weread_text_center(fb, 250 + i * 62, 20, notes[i]);
+        ui_draw_button(fb, weread_action_rect(), "同意并继续", false);
+        if (s_weread_message[0]) weread_text_center(fb, 900, 19, s_weread_message);
+        transfer_navigation(fb, 2);
+        return;
+    }
+
+    if (!s_weread_started) {
+        weread_text_center(fb, 300, 24, "微信读书未启动");
+        weread_text_center(fb, 372, 20, s_weread_message[0] ? s_weread_message : "请检查网络后重试");
+        ui_draw_button(fb, weread_action_rect(), "重试", false);
+        transfer_navigation(fb, 2);
+        return;
+    }
+
+    if (!s_status.network_ready) {
+        const bool failed = s_status.state == READ_PICO_TRANSFER_ERROR;
+        weread_text_center(fb, 300, 24, failed ? "WiFi 连接失败" : "正在连接 WiFi…");
+        if (failed) {
+            weread_text_center(fb, 372, 20, "请先在「WiFi传书」里连接网络");
+            ui_draw_button(fb, weread_action_rect(), "重试", false);
+        }
+        transfer_navigation(fb, 2);
+        return;
+    }
+
+    if (s_weread.state == RW_SHELF || s_weread.state == RW_CACHING || s_weread.loading) {
+        // 只读 tick 拍下的快照，render 里不加锁、不碰存储。
+        // Read the tick snapshot only; render takes no locks and touches no storage.
+        const unsigned total = s_weread.shelf_count;
+        char line[96];
+        if (s_weread.loading) {
+            weread_text_center(fb, 300, 24, "正在载入书架…");
+            transfer_navigation(fb, 2);
+            return;
+        }
+        snprintf(line, sizeof(line), "书架 · %u 本", total);
+        ui_text(fb, 42, 182, 21, line, EPD_DRAW_ALIGN_LEFT, false);
+        if (!s_shelf_row_count) {
+            weread_text_center(fb, 320, 22, "书架为空");
+            weread_text_center(fb, 372, 19, "点下方按钮重新载入");
+        }
+        for (unsigned i = 0; i < s_shelf_row_count; ++i) {
+            EpdRect row = weread_row_rect((int)i);
+            ui_fill_round_rect(fb, row, 18, UI_GRAY_WHITE);
+            char title[128];
+            snprintf(title, sizeof(title), "%s", s_shelf_rows[i].title);
+            weread_clip(title, 24, 470);
+            ui_text(fb, row.x + 20, row.y + 8, 24, title, EPD_DRAW_ALIGN_LEFT, false);
+            char author[80];
+            snprintf(author, sizeof(author), "%s", s_shelf_rows[i].author[0] ? s_shelf_rows[i].author : "未知作者");
+            weread_clip(author, 18, 470);
+            ui_text(fb, row.x + 20, row.y + 46, 18, author, EPD_DRAW_ALIGN_LEFT, false);
+            const bool caching_row = s_weread.state == RW_CACHING &&
+                                     !strcmp(s_shelf_rows[i].book_id, s_weread.book_id);
+            if (caching_row) {
+                char progress[24];
+                if (s_weread.stage >= 2) snprintf(progress, sizeof(progress), "打包 %u%%", s_weread.percent);
+                else snprintf(progress, sizeof(progress), "缓存 %u%%", s_weread.percent);
+                ui_text_vc(fb, row.x + row.width - 24, row.y + 30, 18, progress, EPD_DRAW_ALIGN_RIGHT, false);
+            } else if (s_shelf_rows[i].cached) {
+                ui_text_vc(fb, row.x + row.width - 24, row.y + 30, 17, "已缓存", EPD_DRAW_ALIGN_RIGHT, false);
+            }
+        }
+        if (s_shelf_pages > 1) {
+            ui_draw_button(fb, weread_prev_rect(), "上一页", false);
+            ui_draw_button(fb, weread_next_rect(), "下一页", false);
+            snprintf(line, sizeof(line), "%u / %u", s_shelf_page + 1, s_shelf_pages);
+            ui_text_vc(fb, UI_LOCK_WIDTH / 2, 872, 20, line, EPD_DRAW_ALIGN_CENTER, false);
+        }
+        const char *action = !s_weread.logged_in ? "重新登录"
+                             : s_weread.state == RW_CACHING ? "取消缓存" : "刷新书架";
+        ui_draw_button(fb, weread_action_rect(), action, false);
+        if (s_weread.message[0]) weread_text_center(fb, 918, 18, s_weread.message);
+        transfer_navigation(fb, 2);
+        return;
+    }
+
+    switch (s_weread.state) {
+        case RW_ERROR:
+            weread_text_center(fb, 260, 24, "没有完成");
+            weread_text_center(fb, 330, 20, s_weread.message[0] ? s_weread.message : "请重试");
+            ui_draw_button(fb, weread_action_rect(), "重试", false);
+            break;
+        case RW_QR:
+        case RW_WAIT_SCAN:
+            if (s_weread_qr[0]) ui_wifi_qr_draw(fb, (EpdRect){222, 214, 240, 240});
+            weread_text_center(fb, 500, 22,
+                               s_weread.state == RW_QR ? "请用微信扫码" : "等待手机确认…");
+            weread_text_center(fb, 552, 19, s_weread.message);
+            break;
+        default:
+            weread_text_center(fb, 300, 24, "已登录");
+            weread_text_center(fb, 372, 20, s_weread.message[0] ? s_weread.message : "书架将在下一步接入");
+            ui_draw_button(fb, weread_action_rect(), "返回", false);
+            break;
+    }
+    transfer_navigation(fb, 2);
+}
+
+static app_redraw_t weread_gesture(app_ctx_t* ctx, const ui_gesture_event_t* ev) {
+    if (ev->type == UI_GESTURE_TAP && ev->y0 < 160 && ev->x0 < 120) {
+        // 缓存中返回只取消本次缓存，留在书架，避免误退把整本丢掉。
+        // Back during caching cancels the job but stays on the shelf.
+        if (s_weread.state == RW_CACHING) {
+            (void)read_pico_transfer_weread_cancel();
+            return APP_REDRAW_PAGE;
+        }
+        weread_leave();
+        return APP_REDRAW_PAGE;
+    }
+    const bool inside = ui_rect_hit(weread_action_rect(), ev->x, ev->y);
+    // 连接中就还没有可点的按钮，别让一块看不见的区域触发"返回"。
+    // While connecting no button is drawn; an invisible hit area must not act as "back".
+    if (s_weread.state == RW_SHELF && s_weread.logged_in && !s_weread.loading &&
+        ev->type == UI_GESTURE_TAP) {
+        for (unsigned i = 0; i < s_shelf_row_count; ++i) {
+            if (ui_rect_hit(weread_row_rect((int)i), ev->x, ev->y)) {
+                const unsigned index = s_shelf_page * WR_SHELF_ROWS + i;
+                (void)read_pico_transfer_weread_cache(index);
+                return APP_REDRAW_PAGE;
+            }
+        }
+    }
+    if (s_weread.state == RW_SHELF && !s_weread.loading && s_shelf_pages > 1 &&
+        ev->type == UI_GESTURE_TAP) {
+        if (ui_rect_hit(weread_prev_rect(), ev->x, ev->y) && s_shelf_page > 0) {
+            --s_shelf_page;
+            weread_shelf_sync();
+            return APP_REDRAW_PAGE;
+        }
+        if (ui_rect_hit(weread_next_rect(), ev->x, ev->y) && s_shelf_page + 1 < s_shelf_pages) {
+            ++s_shelf_page;
+            weread_shelf_sync();
+            return APP_REDRAW_PAGE;
+        }
+    }
+    const bool connecting = s_weread_started && !s_status.network_ready &&
+                            s_status.state != READ_PICO_TRANSFER_ERROR;
+    const bool show_button = !connecting && !s_weread.loading &&
+                             (!s_weread_accepted || !s_weread_started ||
+                              s_weread.state == RW_ERROR || s_weread.state == RW_SHELF ||
+                              (s_weread.state != RW_QR && s_weread.state != RW_WAIT_SCAN));
+    const int old = s_pressed;
+    s_pressed = ev->type == UI_GESTURE_PRESS && show_button && inside ? 90 : -1;
+    if (ev->type == UI_GESTURE_TAP && old == 90 && show_button && inside) {
+        return weread_action();
+    }
+    if (old == s_pressed) return APP_REDRAW_NONE;
+    render(ctx, ctx->fb);
+    s_area = weread_action_rect();
+    s_settle = false;
+    return APP_REDRAW_AREA;
+}
+
 
 /* ---- 设备端配网 / Device provisioning ---- */
 static void fit_label(char* text, int px, int width) {
@@ -773,6 +1216,7 @@ static void render_content(app_ctx_t* ctx, uint8_t* fb) {
                    EPD_DRAW_ALIGN_CENTER, true);
         return;
     }
+    if (s_view == TRANSFER_WEREAD) { draw_weread(fb); return; }
     if (s_view == TRANSFER_METHODS) { draw_methods(fb); return; }
     if (s_view == TRANSFER_NETWORKS) { draw_networks(fb); return; }
     if (s_view == TRANSFER_PASSWORD) { draw_password(fb); return; }
@@ -849,6 +1293,10 @@ static void on_enter(app_ctx_t* ctx) {
     s_usb_capacity_bytes = 0;
     s_method_message[0] = 0;
     s_view = TRANSFER_METHODS;
+    s_weread_started = false;
+    s_weread_revision = 0;
+    s_weread_qr[0] = 0;
+    s_weread_message[0] = 0;
     s_direct_entry = s_usb_requested || s_wifi_upload_requested || s_hotspot_requested;
     s_usb_entry = s_usb_requested;
     s_forget_confirm = false;
@@ -933,6 +1381,8 @@ static void transfer_on_media_lost(app_ctx_t* ctx) {
     if (s_root.is_flash) return;
     stop_session();
     s_start_pending = s_scan_pending = false;
+    s_weread_started = false;
+    s_weread_message[0] = 0;
     s_view = s_direct_entry ? TRANSFER_HOME : TRANSFER_METHODS;
     clear_password();
     s_pressed = -1;
@@ -963,6 +1413,7 @@ static void transfer_on_exit(app_ctx_t* ctx) {
     s_wifi_settings_only = false;
     s_usb_entry = false;
     s_direct_entry = false;
+    s_weread_started = false;
     display_set_bulk_io(false);
     if (s_any_changed) book_store_notify_changed();
     ESP_LOGI(TAG, "leave keep_sta=%d heap before=%u after=%u internal_before=%u internal_after=%u",
@@ -1003,6 +1454,7 @@ static app_redraw_t on_tick(app_ctx_t* ctx) {
         return APP_REDRAW_PAGE;
     }
     if (usb_storage_active()) return APP_REDRAW_NONE;
+    if (s_view == TRANSFER_WEREAD) return weread_tick(ctx);
     if (s_view == TRANSFER_METHODS) return APP_REDRAW_NONE;
     if (s_view != TRANSFER_HOME) return network_ui_tick(ctx);
     if (s_start_pending) {
@@ -1078,7 +1530,7 @@ static int hit_control(uint16_t x, uint16_t y) {
 }
 
 static int hit_method(uint16_t x, uint16_t y) {
-    for (int i = 0; i < 2; ++i) if (ui_rect_hit(method_control_rect(i), x, y)) return i;
+    for (int i = 0; i < 4; ++i) if (ui_rect_hit(method_control_rect(i), x, y)) return i;
     return -1;
 }
 
@@ -1094,7 +1546,12 @@ static app_redraw_t stop_usb_for_navigation(app_ctx_t *ctx, bool home) {
     }
     if (home) ui_nav_request(ctx, 0);
     else if (s_direct_entry) ctx->request_return = true;
-    else s_view = TRANSFER_METHODS;
+    else {
+        s_view = TRANSFER_METHODS;
+        // 从方式列表进入的 USB 退出后必须清标志，否则 render 仍按 USB 页绘制。
+        // USB entered from the method list must clear the flag, or render keeps painting USB.
+        s_usb_entry = false;
+    }
     return ctx->request_return || home ? APP_REDRAW_NONE : APP_REDRAW_PAGE;
 }
 
@@ -1115,6 +1572,17 @@ static app_redraw_t method_gesture(app_ctx_t *ctx, const ui_gesture_event_t *ev)
         } else if (origin == 1) {
             if (start_hotspot_service()) return APP_REDRAW_PAGE;
             snprintf(s_method_message, sizeof(s_method_message), "传输正在结束，请稍后再试");
+        } else if (origin == 2) {
+            if (!read_pico_transfer_try_stop_if_idle()) {
+                snprintf(s_method_message, sizeof(s_method_message), "传输正在结束，请稍后再试");
+            } else {
+                stop_session();
+                enter_usb_from_methods();
+            }
+            return APP_REDRAW_PAGE;
+        } else if (origin == 3) {
+            weread_enter();
+            return APP_REDRAW_PAGE;
         }
         return APP_REDRAW_PAGE;
     }
@@ -1132,6 +1600,7 @@ static app_redraw_t on_gesture(app_ctx_t* ctx, const ui_gesture_event_t* ev) {
 
     if (ev->type == UI_GESTURE_TAP && ev->y0 < 160 && ev->x0 < 120) {
         if (s_usb_entry || usb_storage_active()) return stop_usb_for_navigation(ctx, false);
+        if (s_view == TRANSFER_WEREAD) { weread_leave(); return APP_REDRAW_PAGE; }
         if (s_view == TRANSFER_PASSWORD) { clear_password(); s_view = TRANSFER_NETWORKS; return APP_REDRAW_PAGE; }
         if (s_view == TRANSFER_NETWORKS) {
             if (s_wifi_settings_only) { ctx->request_return = true; return APP_REDRAW_NONE; }
@@ -1148,6 +1617,7 @@ static app_redraw_t on_gesture(app_ctx_t* ctx, const ui_gesture_event_t* ev) {
         return APP_REDRAW_NONE;
     }
     if (s_view == TRANSFER_METHODS) return method_gesture(ctx, ev);
+    if (s_view == TRANSFER_WEREAD) return weread_gesture(ctx, ev);
     if (s_view != TRANSFER_HOME) return provisioning_gesture(ctx, ev);
     int old = s_pressed;
     int origin = hit_control(ev->x0, ev->y0);

@@ -155,6 +155,138 @@ static void password_caret_regression(app_ctx_t *ctx) {
     assert(on_tick(ctx)==APP_REDRAW_NONE&&!strcmp(s_password,"abcde"));ctx->touch=NULL;ctx->now_ms=0;
     clear_password();ui_keyboard_begin(&s_password_input,true);
 }
+// 方式列表里的 USB：进入读卡、返回列表并停用。
+// USB from the method list: enter card mode, return to the list and stop it.
+static void usb_method_regression(app_ctx_t* ctx) {
+    on_enter(ctx);
+    tap(ctx, method_control_rect(2));
+    assert(s_view == TRANSFER_HOME && s_usb_entry && !s_direct_entry && s_usb_start_pending);
+    assert(on_tick(ctx) == APP_REDRAW_PAGE);
+    assert(test_usb_active);
+    tap(ctx, (EpdRect){36, 79, 50, 50});
+    assert(s_view == TRANSFER_METHODS && !s_usb_entry && !test_usb_active);
+}
+
+// 微信读书入口：免责确认、启动来源、二维码与离页停服。
+// WeRead entry: disclaimer, source start, QR and teardown on leave.
+static void weread_regression(app_ctx_t* ctx) {
+    test_weread_disclaimer = false;
+    memset(&test_weread_status, 0, sizeof(test_weread_status));
+    test_stop_count = 0;
+    test_configured = true;
+    on_enter(ctx);
+    tap(ctx, method_control_rect(3));
+    assert(s_view == TRANSFER_WEREAD);
+    assert(!s_weread_accepted && !s_weread_started);
+    tap(ctx, weread_action_rect());
+    assert(test_weread_disclaimer && s_weread_accepted && s_weread_started);
+    assert(test_cfg.source == READ_PICO_TRANSFER_SOURCE_WEREAD);
+    assert(test_cfg.mode == READ_PICO_TRANSFER_MODE_STA);
+    assert(!test_cfg.network_only && test_cfg.file_changed_cb && test_cfg.free_bytes_cb);
+
+    snprintf(test_weread_status.qr_url, sizeof(test_weread_status.qr_url),
+             "https://weread.qq.com/web/confirm?uid=abc");
+    test_weread_status.state = RW_QR;
+    test_weread_status.revision = 7;
+    ctx->now_ms += 3000;
+    assert(on_tick(ctx) == APP_REDRAW_PAGE);
+    assert(!strcmp(test_qr_payload, test_weread_status.qr_url));
+
+    tap(ctx, (EpdRect){36, 40, 40, 40});
+    assert(s_view == TRANSFER_METHODS && !s_weread_started);
+    assert(test_stop_count > 0);
+}
+
+// 书架视图：列表快照、翻页与刷新入口。
+// Shelf view: page snapshot, paging and the refresh action.
+static void weread_shelf_regression(app_ctx_t* ctx) {
+    test_weread_disclaimer = true;
+    test_configured = true;
+    test_status = (read_pico_transfer_status_t){.mode = READ_PICO_TRANSFER_MODE_STA,
+                                                .state = READ_PICO_TRANSFER_READY, .network_ready = true};
+    memset(&test_weread_status, 0, sizeof(test_weread_status));
+    test_shelf_count = 3;
+    for (unsigned i = 0; i < 3; ++i) {
+        memset(&test_shelf[i], 0, sizeof(test_shelf[i]));
+        snprintf(test_shelf[i].book_id, sizeof(test_shelf[i].book_id), "%u", i + 1);
+        snprintf(test_shelf[i].title, sizeof(test_shelf[i].title), "书%d", (int)i + 1);
+        test_shelf[i].cached = i == 0;
+    }
+    on_enter(ctx);
+    tap(ctx, method_control_rect(3));
+    assert(s_view == TRANSFER_WEREAD && s_weread_started);
+
+    test_weread_status.state = RW_SHELF;
+    test_weread_status.logged_in = true;
+    test_weread_status.shelf_count = 3;
+    test_weread_status.revision = 21;
+    ctx->now_ms += 3000;
+    assert(on_tick(ctx) == APP_REDRAW_PAGE);
+    assert(s_shelf_row_count == 3 && s_shelf_pages == 1 && s_shelf_page == 0);
+    assert(!strcmp(s_shelf_rows[0].title, "书1") && s_shelf_rows[0].cached);
+    render(ctx, ctx->fb);
+
+    // 8 本跨两页；下一页按钮翻到第 2 页。/ Eight books span two pages; the next button moves on.
+    test_shelf_count = 8;
+    for (unsigned i = 0; i < 8; ++i) {
+        snprintf(test_shelf[i].book_id, sizeof(test_shelf[i].book_id), "%u", i + 1);
+        snprintf(test_shelf[i].title, sizeof(test_shelf[i].title), "书%d", (int)i + 1);
+    }
+    test_weread_status.shelf_count = 8;
+    test_weread_status.logged_in = true;
+    test_weread_status.revision = 22;
+    ctx->now_ms += 3000;
+    assert(on_tick(ctx) == APP_REDRAW_PAGE);
+    assert(s_shelf_pages == 2 && s_shelf_row_count == 7);
+    tap(ctx, weread_next_rect());
+    assert(s_shelf_page == 1 && s_shelf_row_count == 1);
+    assert(!strcmp(s_shelf_rows[0].title, "书8"));
+    tap(ctx, weread_prev_rect());
+    assert(s_shelf_page == 0 && s_shelf_row_count == 7);
+
+    // 刷新按钮走组件接口，不改页面。/ The refresh action calls the component and stays on the page.
+    tap(ctx, weread_action_rect());
+    assert(s_view == TRANSFER_WEREAD);
+
+    // 点行开始缓存，缓存中该行右侧显示进度，按钮变成取消。
+    // Tapping a row starts caching; the row shows progress and the action becomes cancel.
+    test_cache_calls = 0;
+    tap(ctx, weread_row_rect(0));
+    assert(test_cache_calls == 1 && test_cache_index == 0);
+    test_weread_status.state = RW_CACHING;
+    test_weread_status.logged_in = true;
+    snprintf(test_weread_status.book_id, sizeof(test_weread_status.book_id), "1");
+    snprintf(test_weread_status.title, sizeof(test_weread_status.title), "书1");
+    test_weread_status.stage = 1;
+    test_weread_status.percent = 42;
+    test_weread_status.chapter_done = 5;
+    test_weread_status.chapter_total = 12;
+    test_weread_status.revision = 30;
+    ctx->now_ms += 3000;
+    assert(on_tick(ctx) == APP_REDRAW_PAGE);
+    render(ctx, ctx->fb);
+    assert(s_shelf_row_count == 7);
+
+    // 纯百分比变化只推该行的进度块，不是整页。
+    // A pure percent change pushes only the row's progress block, not the page.
+    test_weread_status.percent = 45;
+    test_weread_status.revision = 31;
+    ctx->now_ms += 3000;
+    assert(on_tick(ctx) == APP_REDRAW_AREA);
+    assert(s_area.y == weread_progress_rect(0).y && s_area.height == 56 &&
+           s_area.x == weread_progress_rect(0).x && s_area.width == 216);
+    test_cancel_calls = 0;
+    tap(ctx, weread_action_rect());
+    assert(test_cancel_calls == 1);
+    test_weread_status.state = RW_SHELF;
+    test_weread_status.revision = 32;
+    ctx->now_ms += 3000;
+    on_tick(ctx);
+
+    tap(ctx, (EpdRect){36, 40, 40, 40});
+    assert(s_view == TRANSFER_METHODS && !s_weread_started);
+}
+
 int main(void) {
     assert(transfer_signature_valid("",0)&&transfer_signature_valid("中文🙂",10));
     assert(!transfer_signature_valid("a\0b",3)&&!transfer_signature_valid("\xed\xa0\x80",3));
@@ -202,9 +334,10 @@ int main(void) {
     network_ui_tick(&ctx);
     assert(s_network_count == 8 && !s_scan_pending);
     test_configured = s_saved_configured = true;
+    // 底栏由 app_loop 命中后再调 ui_nav_request；页面本身必须忽略这块区域。
+    // The loop resolves the bar before dispatch; the page must ignore that area.
     tap(&ctx, (EpdRect){540, UI_NAV_TOP + 16, 20, 20});
-    assert(test_nav_index == 3);
-    test_nav_index = -1;
+    assert(test_nav_index == -1);
     assert(s_view == TRANSFER_NETWORKS);
     tap(&ctx, network_control_rect(11));
     assert(test_forget_count == 0);
@@ -351,5 +484,8 @@ int main(void) {
     test_scan_count = 8; test_scan_error = ESP_OK;
     network_ui_tick(&ctx);
     wifi_recovery_regression(&ctx);
+    usb_method_regression(&ctx);
+    weread_regression(&ctx);
+    weread_shelf_regression(&ctx);
     puts("transfer_ui_host_test: PASS");
 }
