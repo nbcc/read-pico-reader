@@ -812,6 +812,13 @@ static bool cache_read_chapter(const wr_shelf_record_t *book, const char *chapte
                      s_http_body, WR_HTTP_BODY_MAX, &len, message)) return false;
     if (!append_shard(s_http_body, len, s_chapter_buf, WR_CHAPTER_BUF, &used, message)) return false;
 
+    if (!used) {
+        // 少数目录项没有任何正文（如空章/后记占位）；生成空章节文件即可。
+        // A few TOC entries have no body (empty chapter/placeholder); emit an empty chapter.
+        wr_debug_log("chapter empty; skip decode");
+        *chapter_len = 0;
+        return true;
+    }
     size_t decoded_len = 0;
     if (!wr_decode_payload(s_chapter_buf, used, &decoded_len)) {
         *message = "章节内容解码失败";
@@ -1094,7 +1101,9 @@ static bool cache_book_inner(const wr_shelf_record_t *book, read_pico_weread_err
         return false;
     }
     remove(part);
+    wr_debug_log("zip begin written=%u", written);
     if (!wr_zip_begin(part, central)) {
+        wr_debug_log("zip begin failed");
         *error = RW_ERR_SD;
         snprintf(message, message_cap, "无法创建 EPUB 文件");
         return false;
@@ -1125,11 +1134,13 @@ static bool cache_book_inner(const wr_shelf_record_t *book, read_pico_weread_err
         packaged = wr_zip_add_file(name, source);
     }
     if (!packaged || !wr_zip_finish()) {
+        wr_debug_log("zip package failed written=%u", written);
         wr_zip_abort();
         *error = RW_ERR_SD;
         snprintf(message, message_cap, "打包 EPUB 失败");
         return false;
     }
+    wr_debug_log("zip package ok written=%u", written);
 
     publish_cache(RW_CACHING, RW_ERR_NONE, "正在保存", 3, 96, done, (unsigned)total);
     char final[288], directory[288];
@@ -1139,11 +1150,14 @@ static bool cache_book_inner(const wr_shelf_record_t *book, read_pico_weread_err
         return false;
     }
     snprintf(directory, sizeof(directory), "%s/%s", s_root_dir, WR_BOOK_SUBDIR);
+    wr_debug_log("epub commit start final_len=%u", (unsigned)strlen(final));
     if (!wr_ensure_dir(directory) || !wr_book_commit(part, final)) {
+        wr_debug_log("epub commit failed");
         *error = RW_ERR_SD;
         snprintf(message, message_cap, "保存 EPUB 失败");
         return false;
     }
+    wr_debug_log("epub commit ok");
     if (s_file_changed) (void)s_file_changed(final);
     (void)wr_remove_tree(workspace);
     return true;
