@@ -15,6 +15,7 @@
  * Starting temporary WiFi while already connected returned invalid state, so sync now routes by connection state.
  */
 #include "read_pico_search.h"
+#include "weread/read_pico_weread.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1169,6 +1170,7 @@ static void ip_event(void *arg, esp_event_base_t base, int32_t id, void *data) {
     }
     portEXIT_CRITICAL(&s_lock);
     if (accepted) ESP_LOGI("transfer", "sta ready url=%s", url);
+    if (accepted && s_cfg.source == READ_PICO_TRANSFER_SOURCE_WEREAD) wr_service_on_network_ready();
 }
 
 void read_pico_transfer_service_poll(void) {
@@ -2101,6 +2103,7 @@ static esp_err_t files_mutation_handler(httpd_req_t *req) {
 /* ---- 生命周期 / Lifecycle ---- */
 bool read_pico_transfer_try_stop_if_idle(void) {
     if (!cancel_time_sync(false)) return false;
+    if (read_pico_transfer_weread_busy()) return false;
     portENTER_CRITICAL(&s_lock);
     bool accepted = admission_stop(&s_stopping, s_upload_active);
     portEXIT_CRITICAL(&s_lock);
@@ -2114,6 +2117,7 @@ bool read_pico_transfer_pause_for_sleep(void) {
     read_pico_transfer_get_status(&status);
     if (status.state == READ_PICO_TRANSFER_STOPPED) return true;
     if (status.state == READ_PICO_TRANSFER_UPLOADING) return false;
+    if (read_pico_transfer_weread_busy()) return false;
     read_pico_transfer_cfg_t saved = s_cfg;
     if (saved.root_dir) {
         strlcpy(s_sleep_root, saved.root_dir, sizeof(s_sleep_root));
@@ -2134,6 +2138,9 @@ void read_pico_transfer_resume_after_sleep(void) {
 
 void read_pico_transfer_stop(void) {
     if (!cancel_time_sync(false)) return;
+    // 先汇合 WeRead worker，再拆射频；顺序颠倒会让在途请求踩到已释放的 netif。
+    // Join the WeRead worker before touching the radio; the reverse order frees the netif under it.
+    wr_service_shutdown();
     portENTER_CRITICAL(&s_lock); s_stopping = true; portEXIT_CRITICAL(&s_lock);
     if (s_http) { httpd_stop(s_http); s_http = NULL; }
     if (s_started) { esp_wifi_stop(); s_started = false; }
@@ -2153,7 +2160,12 @@ void read_pico_transfer_stop(void) {
 }
 
 esp_err_t read_pico_transfer_start(const read_pico_transfer_cfg_t *cfg) {
-    if (!cfg || (cfg->network_only && cfg->mode != READ_PICO_TRANSFER_MODE_STA) ||
+    if (!cfg) return ESP_ERR_INVALID_ARG;
+    // 微信读书是客户端拉取：只允许 STA、必须有存储，且不借用 network_only。
+    // WeRead pulls as a client: STA only, storage required, and network_only is not a valid shortcut.
+    const bool weread = cfg->source == READ_PICO_TRANSFER_SOURCE_WEREAD;
+    if ((cfg->network_only && cfg->mode != READ_PICO_TRANSFER_MODE_STA) ||
+        (weread && (cfg->mode != READ_PICO_TRANSFER_MODE_STA || cfg->network_only)) ||
         (!cfg->network_only && (!cfg->root_dir || !cfg->free_bytes_cb)) ||
         (cfg->root_dir && strlen(cfg->root_dir) >= sizeof(s_root)) ||
         (cfg->mode != READ_PICO_TRANSFER_MODE_AP && cfg->mode != READ_PICO_TRANSFER_MODE_STA)) return ESP_ERR_INVALID_ARG;
@@ -2166,14 +2178,30 @@ esp_err_t read_pico_transfer_start(const read_pico_transfer_cfg_t *cfg) {
         if(reserve!=ESP_OK){release_config();return reserve;}
         s_ble_network_reserved=true;
     }
+    if (weread) {
+        // 射频启动前预留 worker 栈，避免 WiFi 碎片导致任务创建失败。
+        // Reserve the worker stack before the radio starts so WiFi fragmentation cannot block it.
+        const esp_err_t prepared = wr_service_prepare();
+        if (prepared != ESP_OK) {
+            read_pico_transfer_stop();
+            release_config();
+            return prepared;
+        }
+    }
     s_cfg = *cfg;
     if (cfg->root_dir) strcpy(s_root, cfg->root_dir);
     else s_root[0] = 0;
     s_cfg.root_dir = s_root;
+    if (weread) {
+        wr_service_set_root(s_root);
+        wr_service_set_file_changed(cfg->file_changed_cb);
+        wr_service_set_free_bytes(cfg->free_bytes_cb, cfg->free_bytes_ctx);
+    }
     portENTER_CRITICAL(&s_lock);
     memset(&s_status, 0, sizeof(s_status)); s_status.state = READ_PICO_TRANSFER_STARTING;
     s_stopping = s_upload_active = false;
     s_status.mode = cfg->mode;
+    s_status.source = cfg->source;
     portEXIT_CRITICAL(&s_lock);
     transfer_credentials_t saved = {0};
     wifi_config_t wifi = {0};
@@ -2234,7 +2262,7 @@ esp_err_t read_pico_transfer_start(const read_pico_transfer_cfg_t *cfg) {
     err = esp_wifi_set_mode(cfg->mode == READ_PICO_TRANSFER_MODE_AP ? WIFI_MODE_AP : WIFI_MODE_STA); if (err != ESP_OK) goto fail;
     err = esp_wifi_set_config(cfg->mode == READ_PICO_TRANSFER_MODE_AP ? WIFI_IF_AP : WIFI_IF_STA, &wifi); if (err != ESP_OK) goto fail;
     clear_secret(&wifi, sizeof(wifi)); clear_secret(&saved, sizeof(saved));
-    if (!cfg->network_only) {
+    if (!cfg->network_only && !weread) {
         // 单个传输独占缓冲，低内存时逐级降档。/ One transfer-owned block with bounded OOM fallback.
         for (size_t cap = 32768; cap >= 4096 && !s_buffer; cap /= 2) {
             s_buffer = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -2242,7 +2270,7 @@ esp_err_t read_pico_transfer_start(const read_pico_transfer_cfg_t *cfg) {
         }
         if (!s_buffer) { err = ESP_ERR_NO_MEM; goto fail; }
     }
-    if (!cfg->network_only) {
+    if (!cfg->network_only && !weread) {
     httpd_config_t http = HTTPD_DEFAULT_CONFIG();
     // 文件元数据和壁纸设置会访问 NVS；HTTP 栈必须在禁用缓存时仍可读取的内部内存。
     // File metadata and wallpaper settings access NVS; the HTTP stack must remain readable while caches are disabled.
