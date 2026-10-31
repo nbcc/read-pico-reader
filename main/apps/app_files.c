@@ -172,6 +172,10 @@ static EpdRect home_transfer_rect(int index) {
     return (EpdRect){36 + index * 208, 346, 196, 100};
 }
 
+// 方式列表入口：文件首页仍保留三张直达卡，另有此按钮进入四项方式列表。
+// Method-list entry: the three direct cards remain, and this opens the four-method list.
+static EpdRect transfer_methods_rect(void) { return (EpdRect){452, 292, 196, 50}; }
+
 // 存储卡卡片的位置，绘制与命中测试共用一份，免得两处各写一个坐标。
 // The storage card's rect, shared by drawing and hit testing so the two cannot drift apart.
 static EpdRect storage_card_rect(void) { return (EpdRect){36, 171, 612, 112}; }
@@ -689,6 +693,12 @@ static void render_content(app_ctx_t *ctx, uint8_t *fb) {
             if (capacity.width > 0) ui_fill_round_rect(fb, capacity, 3, 0x68);
         }
         ui_text(fb, 42, 308, 21, "传输文件", EPD_DRAW_ALIGN_LEFT, false);
+        EpdRect methods_entry = transfer_methods_rect();
+        ui_fill_round_rect(fb, methods_entry, 25, UI_GRAY_WHITE);
+        ui_draw_control_frame(fb, methods_entry, 25, UI_GRAY_BLACK);
+        ui_text_vc(fb, methods_entry.x + methods_entry.width / 2,
+                   methods_entry.y + methods_entry.height / 2, 19, "传输方式",
+                   EPD_DRAW_ALIGN_CENTER, false);
         static const char *const methods[] = {"WiFi传输", "热点传输", "USB传输"};
         static const char *const details[] = {"同一网络", "连接设备热点", "连接电脑"};
         for (int i = 0; i < 3; ++i) {
@@ -1106,6 +1116,12 @@ static app_redraw_t on_gesture(app_ctx_t *ctx, const ui_gesture_event_t *ev) {
     if (format_cancelled) {
         s_sd_format_confirm = false;
         s_sd_notice[0] = 0;
+    }
+    if (!long_press && ui_rect_hit(transfer_methods_rect(), ev->x0, ev->y0)) {
+        extern const app_desc_t app_transfer;
+        app_transfer_request_method_picker();
+        ctx->request_app = &app_transfer;
+        return APP_REDRAW_NONE;
     }
     for (int i = 0; !long_press && i < 3; ++i) if (ui_rect_hit(home_transfer_rect(i), ev->x0, ev->y0)) {
         extern const app_desc_t app_transfer;
