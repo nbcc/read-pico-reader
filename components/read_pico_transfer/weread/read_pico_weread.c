@@ -27,6 +27,7 @@
 #include "freertos/task.h"
 #include "weread_bookpath.h"
 #include "weread_content.h"
+#include "weread_debug.h"
 #include "weread_http.h"
 #include "weread_protocol.h"
 #include "weread_shelf.h"
@@ -212,6 +213,7 @@ static void save_session_after_login(const char *vid, const char *token) {
     if (!wr_session_set_cookie(&s_session, "wr_vid", 6, vid, strlen(vid)) ||
         !wr_session_set_cookie(&s_session, "wr_skey", 7, token, strlen(token)) ||
         !wr_session_valid(&s_session)) {
+        wr_debug_log("login response lacks credentials");
         publish(RW_ERROR, RW_ERR_LOGIN_FAILED, "登录响应缺少凭据");
         return;
     }
@@ -219,16 +221,20 @@ static void save_session_after_login(const char *vid, const char *token) {
     publish_login(true, NULL);
     if (saved != ESP_OK) {
         ESP_LOGW(TAG, "session save failed: %s", esp_err_to_name(saved));
+        wr_debug_log("session save failed err=%s", esp_err_to_name(saved));
         publish(RW_ERROR, RW_ERR_SD, "登录成功，但会话未能保存");
         return;
     }
+    wr_debug_log("session saved; load shelf");
     publish(RW_IDLE, RW_ERR_NONE, "登录成功");
     run_shelf(false);
 }
 
 static void run_login(void) {
+    wr_debug_log("login begin clock=%d", clock_ready());
     publish(RW_IDLE, RW_ERR_NONE, "正在获取二维码…");
     if (!clock_ready()) {
+        wr_debug_log("login rejected: clock not ready");
         publish(RW_ERROR, RW_ERR_CLOCK, "设备时间未校准，请先联网对时");
         return;
     }
@@ -239,10 +245,12 @@ static void run_login(void) {
 
     char uid[64];
     if (!fetch_login_uid(uid, sizeof(uid))) {
+        wr_debug_log("login getLoginUid failed cancel=%d", s_cancel);
         if (s_cancel) publish(RW_IDLE, RW_ERR_CANCELLED, "已取消");
         else publish(RW_ERROR, RW_ERR_LOGIN_FAILED, "获取登录二维码失败");
         return;
     }
+    wr_debug_log("login uid_len=%u", (unsigned)strlen(uid));
 
     char encoded[192];
     if (!wr_url_encode(uid, encoded, sizeof(encoded))) {
@@ -257,6 +265,7 @@ static void run_login(void) {
     }
     publish_qr(qr_url);
     publish(RW_QR, RW_ERR_NONE, "请用微信扫码");
+    wr_debug_log("login qr published url_len=%d", qr_len);
 
     char path[256];
     snprintf(path, sizeof(path), "/api/auth/getLoginInfo?uid=%s&otp=", encoded);
@@ -272,6 +281,7 @@ static void run_login(void) {
         }
         if (esp_timer_get_time() / 1000 >= deadline) {
             clear_qr();
+            wr_debug_log("login timeout");
             publish(RW_ERROR, RW_ERR_LOGIN_TIMEOUT, "二维码已过期，请重新获取");
             return;
         }
@@ -282,7 +292,10 @@ static void run_login(void) {
         const wr_http_result_t result = get(path, WR_JSON_ACCEPT, body, sizeof(body), &len, &status);
         if (result == WR_HTTP_CANCELLED) continue;
         if (result != WR_HTTP_OK || !len) {
-            if (++failures >= WR_LOGIN_MAX_FAILURES) {
+            ++failures;
+            wr_debug_log("login poll http result=%d status=%d failures=%u",
+                         (int)result, status, failures);
+            if (failures >= WR_LOGIN_MAX_FAILURES) {
                 clear_qr();
                 publish(RW_ERROR, RW_ERR_PROTOCOL, "网络不稳定，请重试");
                 return;
@@ -295,6 +308,7 @@ static void run_login(void) {
         cJSON *root = cJSON_ParseWithLength(body, len);
         if (!root) {
             clear_qr();
+            wr_debug_log("login poll parse failed len=%u", (unsigned)len);
             publish(RW_ERROR, RW_ERR_PROTOCOL, "登录响应无法解析");
             return;
         }
@@ -314,26 +328,32 @@ static void run_login(void) {
 
         if (succeed && has_credentials) {
             clear_qr();
+            wr_debug_log("login success vid_len=%u token_len=%u",
+                         (unsigned)strlen(vid_copy), (unsigned)strlen(token_copy));
             save_session_after_login(vid_copy, token_copy);
             return;
         }
         if (!strcmp(logic_copy, "NEED_OTP")) {
             clear_qr();
+            wr_debug_log("login requires OTP");
             publish(RW_ERROR, RW_ERR_OTP_REQUIRED, "该账号需要验证码（本版暂不支持）");
             return;
         }
         if (!strcmp(logic_copy, "LOGIN_TIMEOUT")) {
             clear_qr();
+            wr_debug_log("login logic timeout");
             publish(RW_ERROR, RW_ERR_LOGIN_TIMEOUT, "二维码已过期，请重新获取");
             return;
         }
         if (logic_copy[0] && strcmp(logic_copy, "WAITING")) {
             clear_qr();
+            wr_debug_log("login unexpected logic=%s", logic_copy);
             publish(RW_ERROR, RW_ERR_LOGIN_FAILED, "登录未完成");
             return;
         }
         if (!waiting) {
             waiting = true;
+            wr_debug_log("login waiting for scan");
             publish(RW_WAIT_SCAN, RW_ERR_NONE, "等待手机确认");
         }
         vTaskDelay(pdMS_TO_TICKS(WR_QR_POLL_MS));
@@ -368,17 +388,22 @@ static bool shelf_ensure_buffers(void) {
 }
 
 static void run_shelf(bool allow_relogin) {
+    wr_debug_log("shelf begin session=%d clock=%d allow_relogin=%d",
+                 wr_session_valid(&s_session), clock_ready(), allow_relogin);
     set_loading(true);
     publish(s_status.state == RW_SHELF ? RW_SHELF : RW_IDLE, RW_ERR_NONE, "正在载入书架…");
     if (!wr_session_valid(&s_session)) {
+        wr_debug_log("shelf rejected: no valid session");
         shelf_fail(RW_ERR_SESSION_EXPIRED, "请先扫码登录");
         return;
     }
     if (!clock_ready()) {
+        wr_debug_log("shelf rejected: clock not ready");
         shelf_fail(RW_ERR_CLOCK, "设备时间未校准，请先联网对时");
         return;
     }
     if (!shelf_ensure_buffers()) {
+        wr_debug_log("shelf rejected: no memory");
         shelf_fail(RW_ERR_NO_MEM, "内存不足，请重启后重试");
         return;
     }
@@ -397,6 +422,8 @@ static void run_shelf(bool allow_relogin) {
         .session = &s_session,
         .status = &status,
     });
+    wr_debug_log("shelf http result=%d status=%d len=%u",
+                 (int)result, status, (unsigned)len);
     if (result == WR_HTTP_CANCELLED || s_cancel) {
         set_loading(false);
         publish(RW_IDLE, RW_ERR_CANCELLED, "已取消");
@@ -404,6 +431,7 @@ static void run_shelf(bool allow_relogin) {
     }
     if (result != WR_HTTP_OK) {
         if (status == 401 || status == 403) {
+            wr_debug_log("shelf session rejected status=%d", status);
             (void)wr_session_erase();
             wr_session_clear(&s_session);
             publish_login(false, NULL);
@@ -415,6 +443,7 @@ static void run_shelf(bool allow_relogin) {
             }
             return;
         }
+        wr_debug_log("shelf http failed result=%d status=%d", (int)result, status);
         shelf_fail(RW_ERR_PROTOCOL, result == WR_HTTP_TOO_BIG ? "书架数据过大" : "网络异常，请重试");
         return;
     }
@@ -423,10 +452,12 @@ static void run_shelf(bool allow_relogin) {
     // Parse into the spare table and swap on success so the UI never sees a partial shelf.
     wr_shelf_t parsed = {.items = s_shelf_scratch, .capacity = WR_SHELF_MAX};
     if (!wr_shelf_parse(s_http_body, len, &parsed)) {
+        wr_debug_log("shelf parse failed len=%u", (unsigned)len);
         shelf_fail(RW_ERR_PROTOCOL, "书架数据无法解析");
         return;
     }
     if (parsed.error_code == -2012) {
+        wr_debug_log("shelf error_code=-2012; clear session");
         (void)wr_session_erase();
         wr_session_clear(&s_session);
         publish_login(false, NULL);
@@ -439,9 +470,12 @@ static void run_shelf(bool allow_relogin) {
         return;
     }
     if (parsed.error_code != 0) {
+        wr_debug_log("shelf error_code=%d", (int)parsed.error_code);
         shelf_fail(RW_ERR_PROTOCOL, "微信读书返回了错误");
         return;
     }
+    wr_debug_log("shelf parsed count=%u truncated=%d",
+                 (unsigned)parsed.count, parsed.truncated);
     wr_shelf_sort(&parsed);
     portENTER_CRITICAL(&s_lock);
     wr_shelf_record_t *previous = s_shelf_records;
@@ -1110,15 +1144,18 @@ static void run_cache(unsigned index) {
 // Decide between reusing a session and starting the QR login; NVS reads stay on the worker.
 static void run_resume(void) {
     wr_session_t stored;
+    wr_debug_log("resume begin");
     if (wr_session_load(&stored) == ESP_OK) {
         s_session = stored;
         wr_session_clear(&stored);
+        wr_debug_log("resume session found; load shelf");
         publish_login(true, NULL);
         publish(RW_IDLE, RW_ERR_NONE, "已登录");
         run_shelf(true);
         return;
     }
     wr_session_clear(&s_session);
+    wr_debug_log("resume no session; start qr login");
     publish_login(false, NULL);
     run_login();
 }
@@ -1194,13 +1231,16 @@ esp_err_t wr_service_prepare(void) {
         vSemaphoreDelete(s_request_sem);
         vSemaphoreDelete(s_exit_sem);
         s_request_sem = s_exit_sem = NULL;
+        wr_debug_log("service prepare failed: no task");
         return ESP_ERR_NO_MEM;
     }
+    wr_debug_log("service prepared");
     return ESP_OK;
 }
 
 void wr_service_on_network_ready(void) {
     if (!s_task) return;
+    wr_debug_log("network ready");
     portENTER_CRITICAL(&s_lock);
     const bool busy = s_busy || s_request != WR_REQ_NONE;
     if (!busy) {
@@ -1209,6 +1249,7 @@ void wr_service_on_network_ready(void) {
         s_cancel = false;
     }
     portEXIT_CRITICAL(&s_lock);
+    wr_debug_log("network ready busy=%d request=%d", busy, (int)s_request);
     if (!busy) xSemaphoreGive(s_request_sem);
 }
 

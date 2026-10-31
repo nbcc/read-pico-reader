@@ -10,7 +10,8 @@ set(weread_sources
     "weread/weread_content.c"
     "weread/weread_toc.c"
     "weread/weread_xhtml.c"
-    "weread/weread_zip.c")
+    "weread/weread_zip.c"
+    "weread/weread_debug.c")
 if(KIIKO_BOARD_METALIO47)
 # SPDX-FileCopyrightText: 2026 mindreset
 # SPDX-License-Identifier: Apache-2.0
@@ -18,7 +19,7 @@ if(KIIKO_BOARD_METALIO47)
 kiiko_board_sources(kiiko_selected_sources "${CMAKE_CURRENT_LIST_DIR}" "read_pico_transfer.c" "transfer_http_time.c" "transfer_ntp_time.c" ${weread_sources})
 idf_component_register(SRCS ${kiiko_selected_sources}
     INCLUDE_DIRS "include" "weread"
-    REQUIRES esp_app_format ble_page_turner read_pico_search esp_wifi esp_netif esp_event esp_http_server esp_http_client mbedtls lwip nvs_flash fatfs esp_timer espressif__cjson
+    REQUIRES esp_app_format ble_page_turner read_pico_search esp_wifi esp_netif esp_event esp_http_server esp_http_client mbedtls lwip nvs_flash fatfs esp_timer freertos espressif__cjson
     EMBED_TXTFILES "upload.html")
 option(METALIO_NETWORK_PROBE "Local S31 read-only radio diagnostics" OFF)
 if(METALIO_NETWORK_PROBE)
@@ -33,7 +34,7 @@ kiiko_board_sources(kiiko_selected_sources "${CMAKE_CURRENT_LIST_DIR}" "read_pic
 idf_component_register(SRCS ${kiiko_selected_sources}
     INCLUDE_DIRS "include" "weread"
     REQUIRES ble_page_turner read_pico_search esp_wifi esp_netif esp_event esp_http_server esp_http_client
-             mbedtls nvs_flash fatfs esp_timer espressif__cjson
+             mbedtls nvs_flash fatfs esp_timer freertos espressif__cjson
     EMBED_TXTFILES "upload.html")
 
 endif()

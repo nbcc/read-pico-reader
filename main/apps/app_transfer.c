@@ -57,6 +57,7 @@
 #include "ui_nav.h"
 #include "ui_wifi_qr.h"
 #include "usb_storage.h"
+#include "weread_debug.h"
 
 static void transfer_navigation(uint8_t *fb,int active) {
     ui_nav_draw(fb,active);
@@ -148,6 +149,7 @@ void app_transfer_request_weread(void) {
     s_usb_requested = s_hotspot_requested = s_wifi_upload_requested = s_wifi_setup_requested = false;
     s_wifi_settings_only = false;
     s_weread_requested = true;
+    wr_debug_log("ui request weread");
 }
 
 void app_transfer_request_usb_start(void) {
@@ -301,12 +303,15 @@ static void weread_clip(char* text, int px, int width) {
 
 static bool weread_start_session(void) {
     s_weread_message[0] = 0;
+    wr_debug_log("start_session wifi_configured=%d accepted=%d", s_status.wifi_configured, s_weread_accepted);
     if (!s_status.wifi_configured) {
         snprintf(s_weread_message, sizeof(s_weread_message), "请先在「WiFi传书」里连接网络");
+        wr_debug_log("start_session rejected: no saved wifi");
         return false;
     }
     if (!read_pico_transfer_try_stop_if_idle()) {
         snprintf(s_weread_message, sizeof(s_weread_message), "传输正在结束，请稍后再试");
+        wr_debug_log("start_session rejected: transfer busy");
         return false;
     }
     stop_session();
@@ -314,12 +319,15 @@ static bool weread_start_session(void) {
     const esp_err_t root_err = book_store_upload_root(&s_root);
     if (root_err != ESP_OK) {
         snprintf(s_weread_message, sizeof(s_weread_message), "未找到可写的书库目录");
+        wr_debug_log("start_session rejected: upload_root err=%s", esp_err_to_name(root_err));
         return false;
     }
     if (s_root.is_flash) {
         snprintf(s_weread_message, sizeof(s_weread_message), "请插入存储卡后再使用微信读书");
+        wr_debug_log("start_session rejected: root is flash");
         return false;
     }
+    wr_debug_log("start_session root=%s limit=%u", s_root.path, (unsigned)book_store_file_limit(&s_root));
     s_media_lost = false;
     read_pico_transfer_cfg_t cfg = {
         .mode = READ_PICO_TRANSFER_MODE_STA,
@@ -339,6 +347,7 @@ static bool weread_start_session(void) {
     const esp_err_t err = read_pico_transfer_start(&cfg);
     s_session_started = err == ESP_OK;
     read_pico_transfer_get_status(&s_status);
+    wr_debug_log("start_session transfer_start=%s state=%d", esp_err_to_name(err), (int)s_status.state);
     if (err != ESP_OK) {
         s_status.state = READ_PICO_TRANSFER_ERROR;
         s_status.last_error = err;
@@ -377,10 +386,12 @@ static void weread_enter(void) {
     ui_wifi_qr_clear();
     s_weread_accepted = read_pico_transfer_weread_disclaimer_accepted();
     s_view = TRANSFER_WEREAD;
+    wr_debug_log("enter accepted=%d wifi=%d", s_weread_accepted, s_status.wifi_configured);
     if (s_weread_accepted) s_weread_started = weread_start_session();
 }
 
 static void weread_leave(void) {
+    wr_debug_log("leave started=%d state=%d", s_weread_started, (int)s_weread.state);
     read_pico_transfer_weread_cancel();
     if (s_weread_started) {
         stop_session();
@@ -415,6 +426,11 @@ static app_redraw_t weread_tick(app_ctx_t* ctx) {
     const bool book_changed = strcmp(next.book_id, s_weread.book_id) != 0;
     const bool bucket_changed = (uint8_t)(next.percent / 5) != s_weread_bucket;
     bool changed = next.revision != s_weread_revision;
+    if (next.state != s_weread.state || next.error != s_weread.error ||
+        strcmp(next.message, s_weread.message) != 0) {
+        wr_debug_log("status state=%d err=%d logged=%d loading=%d msg=%s",
+                     (int)next.state, (int)next.error, next.logged_in, next.loading, next.message);
+    }
     s_weread = next;
     s_weread_revision = next.revision;
     // 缓存中按 5% 与阶段节流，避免每章一次局部刷新拖慢下载。
@@ -429,7 +445,10 @@ static app_redraw_t weread_tick(app_ctx_t* ctx) {
     if (qr_state && next.qr_url[0] && strcmp(next.qr_url, s_weread_qr)) {
         if (ui_wifi_qr_prepare_url(next.qr_url)) {
             snprintf(s_weread_qr, sizeof(s_weread_qr), "%s", next.qr_url);
+            wr_debug_log("qr prepared url_len=%u", (unsigned)strlen(next.qr_url));
             changed = true;
+        } else {
+            wr_debug_log("qr prepare failed url_len=%u", (unsigned)strlen(next.qr_url));
         }
     } else if (!qr_state && s_weread_qr[0]) {
         ui_wifi_qr_clear();
@@ -456,11 +475,16 @@ static app_redraw_t weread_tick(app_ctx_t* ctx) {
 }
 
 static app_redraw_t weread_action(void) {
+    wr_debug_log("action accepted=%d started=%d state=%d logged=%d msg=%s",
+                 s_weread_accepted, s_weread_started, (int)s_weread.state,
+                 s_weread.logged_in, s_weread_message);
     if (!s_weread_accepted) {
         if (read_pico_transfer_weread_accept_disclaimer() != ESP_OK) {
             snprintf(s_weread_message, sizeof(s_weread_message), "无法保存确认状态，请检查存储");
+            wr_debug_log("action disclaimer save failed");
             return APP_REDRAW_PAGE;
         }
+        wr_debug_log("action disclaimer accepted");
         s_weread_accepted = true;
         s_weread_started = weread_start_session();
         return APP_REDRAW_PAGE;
