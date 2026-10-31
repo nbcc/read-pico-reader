@@ -7,6 +7,9 @@ void app_transfer_request_usb_start(void);
 void app_transfer_request_wifi_upload(void);
 void app_transfer_request_hotspot_start(void);
 
+// File manager opens WeRead directly from its fourth transfer card.
+void app_transfer_request_weread(void);
+
 // Settings uses this before opening Transfer to enter WiFi provisioning directly.
 void app_transfer_request_wifi_setup(void);
 

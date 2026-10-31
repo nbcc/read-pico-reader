@@ -160,13 +160,13 @@ static bool file_pager_event(app_ctx_t *ctx,const ui_gesture_event_t *ev,app_red
     if(decorated)*redraw=file_pager_paint(ctx);
     return true;
 }
+// 两列两行：四个方式入口；并排四个会超出 684 像素宽。
+// Two columns by two rows: four transfer methods; four in one row would exceed 684 pixels.
 static EpdRect home_transfer_rect(int index) {
-    return (EpdRect){36 + index * 208, 346, 196, 100};
+    const int x = 36 + (index % 2) * 312;
+    const int y = 346 + (index / 2) * 66;
+    return (EpdRect){x, y, 300, 58};
 }
-
-// 方式列表入口：文件首页仍保留三张直达卡，另有此按钮进入四项方式列表。
-// Method-list entry: the three direct cards remain, and this opens the four-method list.
-static EpdRect transfer_methods_rect(void) { return (EpdRect){452, 292, 196, 50}; }
 
 // 存储卡卡片的位置，绘制与命中测试共用一份，免得两处各写一个坐标。
 // The storage card's rect, shared by drawing and hit testing so the two cannot drift apart.
@@ -685,28 +685,22 @@ static void render_content(app_ctx_t *ctx, uint8_t *fb) {
             if (capacity.width > 0) ui_fill_round_rect(fb, capacity, 3, 0x68);
         }
         ui_text(fb, 42, 308, 21, "传输文件", EPD_DRAW_ALIGN_LEFT, false);
-        EpdRect methods_entry = transfer_methods_rect();
-        ui_fill_round_rect(fb, methods_entry, 25, UI_GRAY_WHITE);
-        ui_draw_control_frame(fb, methods_entry, 25, UI_GRAY_BLACK);
-        ui_text_vc(fb, methods_entry.x + methods_entry.width / 2,
-                   methods_entry.y + methods_entry.height / 2, 19, "传输方式",
-                   EPD_DRAW_ALIGN_CENTER, false);
-        static const char *const methods[] = {"WiFi传输", "热点传输", "USB传输"};
-        static const char *const details[] = {"同一网络", "连接设备热点", "连接电脑"};
-        for (int i = 0; i < 3; ++i) {
+        static const char *const methods[] = {"WiFi传输", "热点传输", "USB传输", "微信读书"};
+        static const char *const details[] = {"同一网络", "连接设备热点", "连接电脑", "扫码缓存书架"};
+        for (int i = 0; i < 4; ++i) {
             EpdRect card = home_transfer_rect(i);
-            ui_fill_round_rect(fb, card, 20, UI_GRAY_WHITE);
-            ui_draw_control_frame(fb, card, 20, UI_GRAY_BLACK);
-            ui_text_vc(fb, card.x + card.width / 2, card.y + 35, 21, methods[i],
+            ui_fill_round_rect(fb, card, 18, UI_GRAY_WHITE);
+            ui_draw_control_frame(fb, card, 18, UI_GRAY_BLACK);
+            ui_text_vc(fb, card.x + card.width / 2, card.y + 21, 21, methods[i],
                        EPD_DRAW_ALIGN_CENTER, false);
-            ui_text_vc(fb, card.x + card.width / 2, card.y + 75, 19, details[i],
+            ui_text_vc(fb, card.x + card.width / 2, card.y + 43, 19, details[i],
                        EPD_DRAW_ALIGN_CENTER, false);
         }
         char summary[48]; snprintf(summary, sizeof(summary), "根目录 · %d 项", s_count);
         ui_text(fb, 36, 482, 21, summary, EPD_DRAW_ALIGN_LEFT, false);
-        ui_fill_round_rect(fb, (EpdRect){537, 458, 111, 50}, 23, UI_GRAY_WHITE);
-        ui_draw_control_frame(fb, (EpdRect){537, 458, 111, 50}, 23, 0x70);
-        ui_text_vc(fb, 592, 483, 19, "名称 ↑", EPD_DRAW_ALIGN_CENTER, false);
+        ui_fill_round_rect(fb, (EpdRect){537, 476, 111, 38}, 19, UI_GRAY_WHITE);
+        ui_draw_control_frame(fb, (EpdRect){537, 476, 111, 38}, 19, 0x70);
+        ui_text_vc(fb, 592, 495, 19, "名称 ↑", EPD_DRAW_ALIGN_CENTER, false);
         int first = s_page * root_rows();
         int rows = s_count - first;
         if (rows > root_rows()) rows = root_rows();
@@ -1079,17 +1073,12 @@ static app_redraw_t on_gesture(app_ctx_t *ctx, const ui_gesture_event_t *ev) {
         s_sd_format_confirm = false;
         s_sd_notice[0] = 0;
     }
-    if (!long_press && ui_rect_hit(transfer_methods_rect(), ev->x0, ev->y0)) {
-        extern const app_desc_t app_transfer;
-        app_transfer_request_method_picker();
-        ctx->request_app = &app_transfer;
-        return APP_REDRAW_NONE;
-    }
-    for (int i = 0; !long_press && i < 3; ++i) if (ui_rect_hit(home_transfer_rect(i), ev->x0, ev->y0)) {
+    for (int i = 0; !long_press && i < 4; ++i) if (ui_rect_hit(home_transfer_rect(i), ev->x0, ev->y0)) {
         extern const app_desc_t app_transfer;
         if (i == 0) app_transfer_request_wifi_upload();
         else if (i == 1) app_transfer_request_hotspot_start();
-        else app_transfer_request_usb_start();
+        else if (i == 2) app_transfer_request_usb_start();
+        else app_transfer_request_weread();
         ctx->request_app = &app_transfer;
         return APP_REDRAW_NONE;
     }

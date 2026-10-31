@@ -80,7 +80,7 @@ static EpdRect s_area;
 static bool s_qr_url, s_qr_ready;
 static char s_usb_message[96];
 static bool s_usb_requested, s_wifi_setup_requested, s_wifi_settings_only;
-static bool s_wifi_upload_requested, s_hotspot_requested, s_direct_entry, s_usb_entry;
+static bool s_wifi_upload_requested, s_hotspot_requested, s_weread_requested, s_direct_entry, s_usb_entry;
 static bool s_usb_start_pending;
 static int64_t s_usb_retry_ms;
 static bool s_usb_host_connected;
@@ -140,7 +140,14 @@ static bool transfer_set_wallpaper(const char *path) {
 
 void app_transfer_request_method_picker(void) {
     s_usb_requested = s_hotspot_requested = s_wifi_upload_requested = s_wifi_setup_requested = false;
+    s_weread_requested = false;
     s_wifi_settings_only = false;
+}
+
+void app_transfer_request_weread(void) {
+    s_usb_requested = s_hotspot_requested = s_wifi_upload_requested = s_wifi_setup_requested = false;
+    s_wifi_settings_only = false;
+    s_weread_requested = true;
 }
 
 void app_transfer_request_usb_start(void) {
@@ -643,6 +650,7 @@ static app_redraw_t weread_gesture(app_ctx_t* ctx, const ui_gesture_event_t* ev)
             return APP_REDRAW_PAGE;
         }
         weread_leave();
+        if (s_direct_entry) { ctx->request_return = true; return APP_REDRAW_NONE; }
         return APP_REDRAW_PAGE;
     }
     const bool inside = ui_rect_hit(weread_action_rect(), ev->x, ev->y);
@@ -1313,7 +1321,7 @@ static void on_enter(app_ctx_t* ctx) {
     s_weread_revision = 0;
     s_weread_qr[0] = 0;
     s_weread_message[0] = 0;
-    s_direct_entry = s_usb_requested || s_wifi_upload_requested || s_hotspot_requested;
+    s_direct_entry = s_usb_requested || s_wifi_upload_requested || s_hotspot_requested || s_weread_requested;
     s_usb_entry = s_usb_requested;
     s_forget_confirm = false;
     s_scan_pending = false;
@@ -1371,6 +1379,9 @@ static void on_enter(app_ctx_t* ctx) {
         } else {
             (void)enter_networks();
         }
+    } else if (s_weread_requested) {
+        s_weread_requested = false;
+        weread_enter();
     } else {
         s_wifi_settings_only = false;
     }
@@ -1638,7 +1649,11 @@ static app_redraw_t on_gesture(app_ctx_t* ctx, const ui_gesture_event_t* ev) {
 
     if (ev->type == UI_GESTURE_TAP && ev->y0 < 160 && ev->x0 < 120) {
         if (s_usb_entry || usb_storage_active()) return stop_usb_for_navigation(ctx, false);
-        if (s_view == TRANSFER_WEREAD) { weread_leave(); return APP_REDRAW_PAGE; }
+        if (s_view == TRANSFER_WEREAD) {
+            weread_leave();
+            if (s_direct_entry) { ctx->request_return = true; return APP_REDRAW_NONE; }
+            return APP_REDRAW_PAGE;
+        }
         if (s_view == TRANSFER_PASSWORD) { clear_password(); s_view = TRANSFER_NETWORKS; return APP_REDRAW_PAGE; }
         if (s_view == TRANSFER_NETWORKS) {
             if (s_wifi_settings_only) { ctx->request_return = true; return APP_REDRAW_NONE; }
