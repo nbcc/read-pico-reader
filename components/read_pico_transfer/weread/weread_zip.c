@@ -172,6 +172,49 @@ bool wr_zip_add_file(const char *name, const char *path) {
     return add_entry(name, NULL, 0, path);
 }
 
+bool wr_zip_add_parts(const char *name, const wr_zip_part_t *parts, size_t count) {
+    if (!s_active || !name || (!parts && count)) return false;
+    const size_t name_len = strlen(name);
+    if (!name_len || name_len > 200 || s_count == UINT16_MAX) return false;
+
+    crc_init();
+    uint32_t crc = 0xffffffffu;
+    size_t size = 0;
+    for (size_t i = 0; i < count; ++i) {
+        if (!parts[i].data && parts[i].len) return false;
+        if (parts[i].len > UINT32_MAX - size) return false;
+        crc = crc_update(crc, parts[i].data, parts[i].len);
+        size += parts[i].len;
+    }
+    crc ^= 0xffffffffu;
+    if ((uint64_t)s_offset + WR_ZIP_LOCAL_MIN + name_len + size > UINT32_MAX) return false;
+
+    const uint32_t local_offset = s_offset;
+    if (!write_u32(s_zip, 0x04034b50u) || !write_u16(s_zip, 20) || !write_u16(s_zip, 0) ||
+        !write_u16(s_zip, 0) || !write_u16(s_zip, 0) || !write_u16(s_zip, 0x21) ||
+        !write_u32(s_zip, crc) || !write_u32(s_zip, (uint32_t)size) || !write_u32(s_zip, (uint32_t)size) ||
+        !write_u16(s_zip, (uint16_t)name_len) || !write_u16(s_zip, 0) || !write_name(s_zip, name, name_len)) {
+        return false;
+    }
+    s_offset += WR_ZIP_LOCAL_MIN + (uint32_t)name_len;
+    for (size_t i = 0; i < count; ++i) {
+        if (parts[i].len && fwrite(parts[i].data, 1, parts[i].len, s_zip) != parts[i].len) return false;
+    }
+    s_offset += (uint32_t)size;
+
+    if (!write_u32(s_central, 0x02014b50u) || !write_u16(s_central, 20) || !write_u16(s_central, 20) ||
+        !write_u16(s_central, 0) || !write_u16(s_central, 0) || !write_u16(s_central, 0) ||
+        !write_u16(s_central, 0x21) || !write_u32(s_central, crc) || !write_u32(s_central, (uint32_t)size) ||
+        !write_u32(s_central, (uint32_t)size) || !write_u16(s_central, (uint16_t)name_len) ||
+        !write_u16(s_central, 0) || !write_u16(s_central, 0) || !write_u16(s_central, 0) ||
+        !write_u16(s_central, 0) || !write_u32(s_central, 0) || !write_u32(s_central, local_offset) ||
+        !write_name(s_central, name, name_len)) {
+        return false;
+    }
+    ++s_count;
+    return true;
+}
+
 bool wr_zip_finish(void) {
     if (!s_active) return false;
     bool ok = fflush(s_zip) == 0 && fflush(s_central) == 0;

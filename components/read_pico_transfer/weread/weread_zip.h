@@ -23,6 +23,13 @@ extern "C" {
 
 bool wr_zip_begin(const char *path, const char *central_path);
 bool wr_zip_add_buffer(const char *name, const void *data, size_t len);
+/// 多个连续片段作为一个条目写入，不拼接、不额外分配。
+/// Write multiple contiguous chunks as one entry without concatenating or allocating.
+typedef struct {
+    const void *data;
+    size_t len;
+} wr_zip_part_t;
+bool wr_zip_add_parts(const char *name, const wr_zip_part_t *parts, size_t count);
 bool wr_zip_add_file(const char *name, const char *path);
 bool wr_zip_finish(void);
 void wr_zip_abort(void);

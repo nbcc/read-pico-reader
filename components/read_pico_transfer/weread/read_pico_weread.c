@@ -833,28 +833,18 @@ static bool cache_read_chapter(const wr_shelf_record_t *book, const char *chapte
     return true;
 }
 
-static bool write_chapter_file(const char *directory, size_t index, const char *uid, const char *title,
-                               const char *xhtml, size_t xhtml_len) {
-    char path[288];
-    if (snprintf(path, sizeof(path), "%s/%04u.xhtml", directory, (unsigned)index) >= (int)sizeof(path)) return false;
-    FILE *file = fopen(path, "wb");
-    if (!file) return false;
-    bool ok = fputs("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!DOCTYPE html>\n"
-                    "<html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>", file) >= 0;
-    if (ok) {
-        for (const char *p = title; *p && ok; ++p) {
-            if (*p == '&') ok = fputs("&amp;", file) >= 0;
-            else if (*p == '<') ok = fputs("&lt;", file) >= 0;
-            else if (*p == '>') ok = fputs("&gt;", file) >= 0;
-            else ok = fputc(*p, file) != EOF;
-        }
-    }
-    if (ok) ok = fprintf(file, "</title><!--weread-uid:%s--><link rel=\"stylesheet\" type=\"text/css\" "
-                               "href=\"../style.css\"/></head><body>\n", uid) >= 0;
-    if (ok && xhtml_len) ok = fwrite(xhtml, 1, xhtml_len, file) == xhtml_len;
-    if (ok) ok = fputs("\n</body></html>\n", file) >= 0;
-    if (fclose(file) != 0) ok = false;
-    if (!ok) remove(path);
+static bool append_escaped(char *buffer, size_t cap, size_t *used, const char *text);
+
+static bool build_chapter_head(char *buffer, size_t cap, size_t *used, const char *uid, const char *title) {
+    *used = 0;
+    bool ok = append_fmt(buffer, cap, used,
+                         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!DOCTYPE html>\n"
+                         "<html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>");
+    if (ok) ok = append_escaped(buffer, cap, used, title);
+    if (ok) ok = append_fmt(buffer, cap, used,
+                            "</title><!--weread-uid:%s--><link rel=\"stylesheet\" type=\"text/css\" "
+                            "href=\"../style.css\"/></head><body>\n",
+                            uid);
     return ok;
 }
 
@@ -862,22 +852,32 @@ static bool write_chapter_file(const char *directory, size_t index, const char *
 // Covers live on a CDN and are fetched without cookies; failures only skip the cover.
 static bool fetch_cover(const wr_shelf_record_t *book, const char *referer, size_t *cover_len,
                         const char **media_type, const char **extension) {
-    if (!book->cover[0]) return false;
+    if (!book->cover[0]) {
+        wr_debug_log("cover missing");
+        return false;
+    }
     char url[WR_SHELF_COVER_CAP + 8];
     if (!strncmp(book->cover, "//", 2)) {
         snprintf(url, sizeof(url), "https:%s", book->cover);
     } else if (!strncmp(book->cover, "http://", 7) || !strncmp(book->cover, "https://", 8)) {
         snprintf(url, sizeof(url), "%s", book->cover);
     } else {
+        wr_debug_log("cover unsupported prefix");
         return false;
     }
     size_t len = 0;
     int status = 0;
     if (!http_call("GET", url, NULL, 0, "image/jpeg,image/png,image/*,*/*", referer, s_http_body,
                    WR_HTTP_BODY_MAX, &len, &status) || !len) {
+        wr_debug_log("cover http failed status=%d len=%u", status, (unsigned)len);
         return false;
     }
-    if (!wr_sniff_image(s_http_body, len, media_type, extension)) return false;
+    wr_debug_log("cover http status=%d len=%u", status, (unsigned)len);
+    if (!wr_sniff_image(s_http_body, len, media_type, extension)) {
+        wr_debug_log("cover sniff failed len=%u", (unsigned)len);
+        return false;
+    }
+    wr_debug_log("cover ok len=%u", (unsigned)len);
     *cover_len = len;
     return true;
 }
@@ -1001,16 +1001,15 @@ static bool cache_book_inner(const wr_shelf_record_t *book, read_pico_weread_err
     safe_id[id_len] = 0;
     if (!id_len) return false;
 
-    char workspace[128], chapters[160], work[160];
+    char workspace[128], work[160];
     if (snprintf(workspace, sizeof(workspace), "%s/%s", WR_WORKSPACE_BASE, safe_id) >= (int)sizeof(workspace) ||
-        snprintf(chapters, sizeof(chapters), "%s/chapters", workspace) >= (int)sizeof(chapters) ||
         snprintf(work, sizeof(work), "%s/work", workspace) >= (int)sizeof(work)) {
         *error = RW_ERR_SD;
         snprintf(message, message_cap, "工作目录路径过长");
         return false;
     }
     (void)wr_remove_tree(workspace);
-    if (!wr_ensure_dir(chapters) || !wr_ensure_dir(work)) {
+    if (!wr_ensure_dir(work)) {
         *error = RW_ERR_SD;
         snprintf(message, message_cap, "无法创建缓存目录");
         return false;
@@ -1047,6 +1046,34 @@ static bool cache_book_inner(const wr_shelf_record_t *book, read_pico_weread_err
         return false;
     }
 
+    char part[288], central[288];
+    if (snprintf(part, sizeof(part), "%s/book.epub.part", work) >= (int)sizeof(part) ||
+        snprintf(central, sizeof(central), "%s/central.tmp", work) >= (int)sizeof(central)) {
+        *error = RW_ERR_SD;
+        snprintf(message, message_cap, "工作目录路径过长");
+        return false;
+    }
+    remove(part);
+    wr_debug_log("zip begin written=0");
+    if (!wr_zip_begin(part, central)) {
+        wr_debug_log("zip begin failed");
+        *error = RW_ERR_SD;
+        snprintf(message, message_cap, "无法创建 EPUB 文件");
+        return false;
+    }
+    static const char kContainer[] =
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+        "<container version=\"1.0\" xmlns=\"urn:oasis:names:tc:opendocument:xmlns:container\">"
+        "<rootfiles><rootfile full-path=\"OEBPS/content.opf\" media-type=\"application/oebps-package+xml\"/>"
+        "</rootfiles></container>";
+    if (!wr_zip_add_buffer("mimetype", "application/epub+zip", 20) ||
+        !wr_zip_add_buffer("META-INF/container.xml", kContainer, strlen(kContainer))) {
+        wr_zip_abort();
+        *error = RW_ERR_SD;
+        snprintf(message, message_cap, "无法创建 EPUB 文件");
+        return false;
+    }
+
     unsigned done = 0;
     unsigned written = 0;
     bool txt_mode = false;
@@ -1072,9 +1099,24 @@ static bool cache_book_inner(const wr_shelf_record_t *book, read_pico_weread_err
             return false;
         }
         ++written;
-        if (!write_chapter_file(chapters, written, chapter->uid, chapter->title, s_xhtml_buf, chapter_len)) {
+        char head[1536];
+        size_t head_len = 0;
+        if (!build_chapter_head(head, sizeof(head), &head_len, chapter->uid, chapter->title)) {
             *error = RW_ERR_SD;
-            snprintf(message, message_cap, "写入章节失败");
+            snprintf(message, message_cap, "生成章节失败");
+            return false;
+        }
+        static const char kChapterTail[] = "\n</body></html>\n";
+        const wr_zip_part_t parts[] = {
+            { head, head_len },
+            { s_xhtml_buf, chapter_len },
+            { kChapterTail, sizeof(kChapterTail) - 1 },
+        };
+        char entry[64];
+        snprintf(entry, sizeof(entry), "OEBPS/text/chapter-%04u.xhtml", written);
+        if (!wr_zip_add_parts(entry, parts, sizeof(parts) / sizeof(parts[0]))) {
+            *error = RW_ERR_SD;
+            snprintf(message, message_cap, "写入 EPUB 失败");
             return false;
         }
         ++done;
@@ -1094,31 +1136,9 @@ static bool cache_book_inner(const wr_shelf_record_t *book, read_pico_weread_err
     }
 
     publish_cache(RW_CACHING, RW_ERR_NONE, "正在打包", 2, 88, done, (unsigned)total);
-    char part[288], central[288];
-    if (snprintf(part, sizeof(part), "%s/book.epub.part", work) >= (int)sizeof(part) ||
-        snprintf(central, sizeof(central), "%s/central.tmp", work) >= (int)sizeof(central)) {
-        *error = RW_ERR_SD;
-        snprintf(message, message_cap, "工作目录路径过长");
-        return false;
-    }
-    remove(part);
-    wr_debug_log("zip begin written=%u", written);
-    if (!wr_zip_begin(part, central)) {
-        wr_debug_log("zip begin failed");
-        *error = RW_ERR_SD;
-        snprintf(message, message_cap, "无法创建 EPUB 文件");
-        return false;
-    }
-    static const char kContainer[] =
-        "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
-        "<container version=\"1.0\" xmlns=\"urn:oasis:names:tc:opendocument:xmlns:container\">"
-        "<rootfiles><rootfile full-path=\"OEBPS/content.opf\" media-type=\"application/oebps-package+xml\"/>"
-        "</rootfiles></container>";
     static const char kStyle[] = "body{line-height:1.7;margin:5%;}img{max-width:100%;}p{margin:0 0 0.8em 0;}";
     size_t used = 0;
-    bool packaged = wr_zip_add_buffer("mimetype", "application/epub+zip", 20) &&
-                    wr_zip_add_buffer("META-INF/container.xml", kContainer, strlen(kContainer)) &&
-                    build_manifest(s_chapter_buf, WR_CHAPTER_BUF, &used, book->title, book->author,
+    bool packaged = build_manifest(s_chapter_buf, WR_CHAPTER_BUF, &used, book->title, book->author,
                                    book->book_id, written, has_cover ? cover_href : NULL,
                                    has_cover ? cover_media : NULL) &&
                     wr_zip_add_buffer("OEBPS/content.opf", s_chapter_buf, used) &&
@@ -1128,12 +1148,6 @@ static bool cache_book_inner(const wr_shelf_record_t *book, read_pico_weread_err
                     wr_zip_add_buffer("OEBPS/toc.ncx", s_chapter_buf, used) &&
                     wr_zip_add_buffer("OEBPS/style.css", kStyle, strlen(kStyle)) &&
                     (!has_cover || wr_zip_add_buffer(cover_entry, s_http_body, cover_len));
-    for (unsigned i = 1; packaged && i <= written; ++i) {
-        char source[288], name[64];
-        snprintf(source, sizeof(source), "%s/%04u.xhtml", chapters, i);
-        snprintf(name, sizeof(name), "OEBPS/text/chapter-%04u.xhtml", i);
-        packaged = wr_zip_add_file(name, source);
-    }
     if (!packaged || !wr_zip_finish()) {
         wr_debug_log("zip package failed written=%u", written);
         wr_zip_abort();
@@ -1182,6 +1196,9 @@ static bool cache_book(const wr_shelf_record_t *book, read_pico_weread_error_t *
                        size_t message_cap) {
     const bool ok = cache_book_inner(book, error, message, message_cap);
     if (!ok) {
+        // 单遍写入时 ZIP 在章节下载前已打开，失败必须先关闭句柄再删工作区。
+        // With single-pass writing the ZIP opens before chapters, so close it before removing the workspace.
+        wr_zip_abort();
         char workspace[128];
         workspace_path(book->book_id, workspace, sizeof(workspace));
         (void)wr_remove_tree(workspace);

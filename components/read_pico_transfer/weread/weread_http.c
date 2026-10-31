@@ -120,10 +120,10 @@ void wr_http_cleanup(void) {
 }
 
 wr_http_result_t wr_http_perform(const wr_http_request_t *request) {
-    if (!request || !request->path || request->path[0] != '/') return WR_HTTP_NET;
+    if (!request || !request->path) return WR_HTTP_NET;
+    const bool absolute = (!strncmp(request->path, "http://", 7) || !strncmp(request->path, "https://", 8));
+    if (request->path[0] != '/' && !absolute) return WR_HTTP_NET;
     char url[512];
-    const bool absolute = request->path[0] == 'h' &&
-                          (!strncmp(request->path, "http://", 7) || !strncmp(request->path, "https://", 8));
     const int url_len = absolute ? snprintf(url, sizeof(url), "%s", request->path)
                                  : snprintf(url, sizeof(url), "%s%s", WR_WEREAD_ORIGIN, request->path);
     if (url_len <= 0 || (size_t)url_len >= sizeof(url)) return WR_HTTP_NET;
