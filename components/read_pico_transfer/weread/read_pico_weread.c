@@ -717,6 +717,17 @@ static bool contains_bytes(const char *haystack, size_t haystack_len, const char
 static bool append_shard(const char *shard, size_t len, char *target, size_t cap, size_t *used, const char **message) {
     const char *body = NULL;
     size_t body_len = 0;
+    // e_1/e_3/t_1 可能以空对象 {} 表示“没有后续分片”，不是损坏。
+    // e_1/e_3/t_1 may return an empty object {} for "no more shards"; that is not corruption.
+    size_t begin = 0, end = len;
+    while (begin < end && (shard[begin] == ' ' || shard[begin] == '\n' || shard[begin] == '\r' || shard[begin] == '\t')) ++begin;
+    while (end > begin && (shard[end - 1] == ' ' || shard[end - 1] == '\n' || shard[end - 1] == '\r' || shard[end - 1] == '\t')) --end;
+    const size_t trimmed = end - begin;
+    if (!trimmed || (trimmed == 2 && shard[begin] == '{' && shard[begin + 1] == '}') ||
+        (trimmed == 4 && !memcmp(shard + begin, "null", 4))) {
+        wr_debug_log("shard empty len=%u; skip", (unsigned)len);
+        return true;
+    }
     if (!wr_shard_body(shard, len, &body, &body_len)) {
         char prefix[33];
         const size_t n = len < 32 ? len : 32;
