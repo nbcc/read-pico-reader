@@ -25,6 +25,11 @@ typedef enum {
 } read_pico_transfer_mode_t;
 
 typedef enum {
+    READ_PICO_TRANSFER_SOURCE_HTTP = 0, ///< 浏览器/网页上传 / Browser upload
+    READ_PICO_TRANSFER_SOURCE_WEREAD,   ///< 微信读书拉取 / WeRead pull
+} read_pico_transfer_source_t;
+
+typedef enum {
     READ_PICO_TRANSFER_STOPPED, ///< 已停止 / Stopped
     READ_PICO_TRANSFER_STARTING, ///< 启动中 / Starting
     READ_PICO_TRANSFER_READY, ///< 等待上传 / Ready
@@ -50,6 +55,7 @@ typedef struct {
     bool (*signature_get_cb)(char *out, size_t cap); ///< 复制当前签名，不依赖页面 / Copy current signature without page dependencies
     esp_err_t (*signature_set_cb)(const char *text); ///< 持久保存签名，空串清除 / Persist a signature; empty clears it
     bool (*wallpaper_set_cb)(const char *path); ///< 图片上传完成后设为锁屏壁纸 / Select an uploaded image as lock wallpaper
+    read_pico_transfer_source_t source; ///< 内容来源，零值沿用浏览器上传 / Content source; zero keeps browser upload
 } read_pico_transfer_cfg_t;
 
 typedef struct {
@@ -67,6 +73,7 @@ typedef struct {
     unsigned done_count; ///< 成功提交数 / Successfully committed files
     unsigned changed_count; ///< 提交、删除或进度清理重试成功的次数 / Commits, deletions, or successful progress-cleanup retries
     esp_err_t last_error; ///< 最近错误 / Last error
+    read_pico_transfer_source_t source; ///< 当前会话来源 / Current session source
 } read_pico_transfer_status_t;
 
 /// 同一控制任务串行启动/停止；重复启动返回状态错误。/ Serialize start/stop on one owner task; repeated start fails.
@@ -115,3 +122,82 @@ esp_err_t read_pico_transfer_sync_time_online(uint32_t *utc_seconds);
 esp_err_t read_pico_transfer_sync_time_auto(uint32_t *utc_seconds);
 /// 主循环消费成功校准事件，用于 PMU/NVS 交接。/ Consume successful sync events on the main loop for PMU/NVS handoff.
 bool read_pico_transfer_take_time_sync(uint32_t *utc_seconds);
+
+/* ---- 微信读书 / WeRead pull source ---- */
+
+typedef enum {
+    RW_IDLE = 0, ///< 空闲（未登录或已登录待书架）/ Idle: logged out, or logged in waiting for the shelf
+    RW_QR,       ///< 已取得二维码 / QR ready
+    RW_WAIT_SCAN,///< 轮询扫码结果 / Polling the scan
+    RW_SHELF,    ///< 书架就绪（下一步接入）/ Shelf ready (next step)
+    RW_CACHING,  ///< 正在缓存一本书 / Caching one book
+    RW_DONE,     ///< 一次性完成态 / One-shot completion
+    RW_ERROR,    ///< 需要用户处理的错误 / Error needing user action
+} read_pico_weread_state_t;
+
+typedef enum {
+    RW_ERR_NONE = 0,
+    RW_ERR_NO_WIFI,         ///< 未配置网络 / No saved network
+    RW_ERR_LOGIN_FAILED,    ///< 登录被拒绝 / Login rejected
+    RW_ERR_LOGIN_TIMEOUT,   ///< 二维码过期或轮询超时 / QR expired or polling timed out
+    RW_ERR_OTP_REQUIRED,    ///< 需要四位验证码（本版不支持）/ OTP required (unsupported here)
+    RW_ERR_SESSION_EXPIRED, ///< 会话失效 / Session expired
+    RW_ERR_PROTOCOL,        ///< 响应格式异常 / Unexpected response
+    RW_ERR_INTEGRITY,       ///< 内容校验失败 / Content integrity failure
+    RW_ERR_SD,              ///< 存储读写失败 / Storage failure
+    RW_ERR_NO_SPACE,        ///< 空间不足 / Not enough space
+    RW_ERR_CANCELLED,       ///< 被用户取消 / Cancelled by the user
+    RW_ERR_BUSY,            ///< 上一件事未结束 / Previous job still running
+    RW_ERR_OTA_BUSY,        ///< 正在升级固件 / Firmware update in progress
+    RW_ERR_CLOCK,           ///< 设备时间不可信，无法校验证书 / Clock untrusted, TLS cannot verify
+    RW_ERR_NO_MEM,          ///< 缓冲分配失败 / buffer allocation failed
+} read_pico_weread_error_t;
+
+typedef struct {
+    read_pico_weread_state_t state; ///< 子状态 / Sub-state
+    unsigned revision;              ///< 单调递增，页面据此重绘 / Monotonic revision for repaint decisions
+    bool loading;                   ///< 正在拉书架 / shelf fetch in progress
+    char qr_url[192];               ///< RW_QR/RW_WAIT_SCAN 有效 / Valid for QR states
+    char account[64];               ///< 昵称，可为空 / Nickname, may be empty
+    bool logged_in;                 ///< 会话可用 / A usable session exists
+    unsigned shelf_count;           ///< 书架条目数 / Shelf entries
+    char title[96];                 ///< 正在缓存的书名 / Book being cached
+    char book_id[48];               ///< 正在缓存的 bookId / bookId being cached
+    uint8_t stage;                  ///< 0 目录 1 正文 2 打包 3 提交 / Pipeline stage
+    uint8_t percent;                ///< 0..100 / Percent
+    unsigned chapter_done;          ///< 已处理章节 / Chapters done
+    unsigned chapter_total;         ///< 总章节 / Chapters total
+    read_pico_weread_error_t error; ///< 错误码 / Error code
+    char message[96];               ///< 面向用户的短句 / Short user-facing text
+} read_pico_weread_status_t;
+
+typedef struct {
+    char book_id[48];
+    char title[128];
+    char author[64];
+    uint32_t update_time;
+    bool cached; ///< 本地书库已有同名 EPUB / a matching EPUB exists in the local library
+} read_pico_weread_shelf_item_t;
+
+/// 仅 STA、不允许 network_only；存储回调必需。/ STA only, network_only rejected; storage callbacks required.
+esp_err_t read_pico_transfer_weread_login(void);
+/// 重新拉取书架；异步，结果经状态与 shelf 接口发布。/ Refetch the shelf asynchronously.
+esp_err_t read_pico_transfer_weread_shelf(void);
+/// 书架条目数（最近一次成功加载）。/ Book count from the last successful load.
+unsigned read_pico_transfer_weread_shelf_count(void);
+/// 按索引复制一份书架条目。/ Copy one shelf entry by index.
+bool read_pico_transfer_weread_shelf_item(unsigned index, read_pico_weread_shelf_item_t *out);
+/// 缓存书架第 index 本；异步，进度经状态发布。/ Cache shelf entry `index` asynchronously.
+esp_err_t read_pico_transfer_weread_cache(unsigned index);
+/// 取消正在进行的登录或缓存；立即返回。/ Cancel the running job and return immediately.
+esp_err_t read_pico_transfer_weread_cancel(void);
+/// 跨任务快照。/ Copy a consistent snapshot.
+void read_pico_transfer_weread_get_status(read_pico_weread_status_t *out);
+/// 登录轮询或缓存中为真。/ True while polling or caching.
+bool read_pico_transfer_weread_busy(void);
+/// 清除会话（不删除已下载 EPUB）。/ Clear the session without deleting cached EPUBs.
+esp_err_t read_pico_transfer_weread_logout(void);
+/// 免责声明是否已确认。/ Whether the disclaimer was accepted.
+bool read_pico_transfer_weread_disclaimer_accepted(void);
+/// 记录免责声明已确认。/ Record disclaimer acceptance.
+esp_err_t read_pico_transfer_weread_accept_disclaimer(void);

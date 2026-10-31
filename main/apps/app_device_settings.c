@@ -254,6 +254,16 @@ static app_redraw_t upgrade_start_pending(void) {
     s_upgrade_job = UPGRADE_JOB_NONE;
     app_home_cover_mode_changed();
     app_book_cover_mode_changed();
+    // 微信读书正在用网时不并发升级：两条 TLS 同时跑会同时要内部内存。
+    // Do not start an update while WeRead holds the network; two TLS sessions compete for internal RAM.
+    if (read_pico_transfer_weread_busy()) {
+        s_upgrade_offer_pending = false;
+        s_update.busy = false;
+        s_update.state = PICO_UPDATE_FAILED;
+        snprintf(s_update.message, sizeof(s_update.message), "微信读书正在使用网络，请先返回传书页取消");
+        snprintf(s_upgrade_notice, sizeof(s_upgrade_notice), "%s", s_update.message);
+        return APP_REDRAW_PAGE;
+    }
     esp_err_t error = downloading ? pico_online_download() : pico_online_check();
     pico_online_get_status(&s_update);
     if (error == ESP_OK) return APP_REDRAW_NONE;
