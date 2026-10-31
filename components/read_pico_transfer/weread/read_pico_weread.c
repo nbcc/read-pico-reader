@@ -1064,8 +1064,9 @@ static bool cache_book_inner(const wr_shelf_record_t *book, read_pico_weread_err
             return false;
         }
         size_t chapter_len = 0;
-        wr_debug_log("cache chapter i=%u uid_len=%u title_len=%u",
-                     (unsigned)i, (unsigned)strlen(chapter->uid), (unsigned)strlen(chapter->title));
+        wr_debug_log("cache chapter i=%u uid_len=%u title=%s words=%u level=%u paid=%u",
+                     (unsigned)i, (unsigned)strlen(chapter->uid), chapter->title,
+                     (unsigned)chapter->words, (unsigned)chapter->level, (unsigned)chapter->paid);
         if (!cache_read_chapter(book, chapter->uid, psvts, reader_referer, &txt_mode, &chapter_len, &reason)) {
             snprintf(message, message_cap, "%s", reason);
             return false;
@@ -1353,6 +1354,9 @@ void wr_service_shutdown(void) {
         xSemaphoreTake(s_exit_sem, portMAX_DELAY);
     }
     s_task = NULL;
+    // worker 已汇合，释放复用的 TLS 连接；必须在拆射频之前完成。
+    // The worker is joined, so release the reused TLS connection before the radio is torn down.
+    wr_http_cleanup();
     vSemaphoreDelete(s_request_sem);
     vSemaphoreDelete(s_exit_sem);
     s_request_sem = s_exit_sem = NULL;

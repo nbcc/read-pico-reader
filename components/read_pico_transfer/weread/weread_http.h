@@ -54,8 +54,10 @@ typedef struct {
     int *status;         ///< 输出 HTTP 状态 / output status
 } wr_http_request_t;
 
-/// 执行一次请求；不跟随重定向。/ Perform one request without following redirects.
+/// 执行一次请求；默认不跟随重定向。/ Perform one request; redirects are off by default.
 wr_http_result_t wr_http_perform(const wr_http_request_t *request);
+/// 释放复用的 HTTP 客户端；worker 退出时调用。/ Release the reused HTTP client at worker exit.
+void wr_http_cleanup(void);
 
 #ifdef __cplusplus
 }
