@@ -353,6 +353,7 @@ static void run_login(void) {
         if (!token_ok) token_ok = json_scalar_copy(payload, "wr_skey", token_copy, sizeof(token_copy));
         const bool has_credentials = vid_ok && token_ok;
         const bool logic_success = !strcmp(logic_copy, "LOGIN_SUCCESS");
+#if WR_DEBUG_ENABLED
         if (logic_success) {
             char keys[192] = {0};
             const cJSON *child = NULL;
@@ -372,6 +373,7 @@ static void run_login(void) {
                          refresh_item && refresh_item->valuestring ? (unsigned)strlen(refresh_item->valuestring) : 0,
                          keys);
         }
+#endif
         cJSON_Delete(root);
 
         if ((succeed || logic_success) && has_credentials) {

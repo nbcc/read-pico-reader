@@ -1,4 +1,5 @@
 include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/board.cmake")
+option(KIIKO_WEREAD_DEBUG_LOG "Enable WeRead on-disk debug logging (local diagnostics only)" OFF)
 set(weread_sources
     "weread/read_pico_weread.c"
     "weread/weread_protocol.c"
@@ -10,8 +11,7 @@ set(weread_sources
     "weread/weread_content.c"
     "weread/weread_toc.c"
     "weread/weread_xhtml.c"
-    "weread/weread_zip.c"
-    "weread/weread_debug.c")
+    "weread/weread_zip.c")
 if(KIIKO_BOARD_METALIO47)
 # SPDX-FileCopyrightText: 2026 mindreset
 # SPDX-License-Identifier: Apache-2.0
@@ -37,4 +37,9 @@ idf_component_register(SRCS ${kiiko_selected_sources}
              mbedtls nvs_flash fatfs esp_timer freertos espressif__cjson
     EMBED_TXTFILES "upload.html")
 
+endif()
+
+if(KIIKO_WEREAD_DEBUG_LOG)
+    target_sources(${COMPONENT_LIB} PRIVATE "weread/weread_debug.c")
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE KIIKO_WEREAD_DEBUG_LOG=1)
 endif()

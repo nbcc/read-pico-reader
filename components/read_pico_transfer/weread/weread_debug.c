@@ -10,6 +10,12 @@
  * 冻结：只追加 /sdcard/weread-debug.log；不记录 wr_vid、wr_skey、accessToken 或完整 cookie。
  * Frozen: append only to /sdcard/weread-debug.log; never log wr_vid, wr_skey, accessToken or cookies.
  */
+// 该文件只随显式调试构建编译；正式构建由 CMake 排除。
+// This file is compiled only for explicit debug builds; release CMake excludes it.
+#if !defined(KIIKO_WEREAD_DEBUG_LOG) || !KIIKO_WEREAD_DEBUG_LOG
+#error "weread_debug.c requires KIIKO_WEREAD_DEBUG_LOG=1"
+#endif
+
 #include "weread_debug.h"
 
 #include <stdio.h>

@@ -190,6 +190,7 @@ def build_one(board, args):
                '-DSDKCONFIG=' + str(work / 'sdkconfig'),
                '-DSDKCONFIG_DEFAULTS=' + str(source / 'boards' / board / info['sdkconfig']),
                '-DCCACHE_ENABLE=OFF', '-DMETALIO_LOCAL_LATENCY=OFF',
+               '-DKIIKO_WEREAD_DEBUG_LOG=' + ('ON' if getattr(args, 'weread_debug', False) else 'OFF'),
                '-DMETALIO_PIE_PIXELS=' + ('ON' if board == 'metalio47' and args.s31_pie else 'OFF'),
                '-DMETALIO_TEXT_RIPPLE_EXPERIMENT=' + ('ON' if board == 'metalio47' and args.s31_text_ripple else 'OFF'),
                '-DMETALIO_READER_PANEL37_EXPERIMENT=' + ('ON' if board == 'metalio47' and args.s31_reader_panel37 else 'OFF'),
@@ -283,6 +284,8 @@ def main():
         parser.add_argument('--managed-' + board, dest='managed_' + board, type=Path)
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--list', action='store_true')
+    parser.add_argument('--weread-debug', action='store_true',
+                        help='Enable the local WeRead SD/serial debug log; delivery builds leave it off')
     parser.add_argument('--s31-pie', action='store_true', help='Explicit local S31 PIE experiment; normal builds stay C')
     parser.add_argument('--s31-text-ripple', action='store_true', help='Explicit local S31 four-level text-ripple experiment; ordinary builds remain full grayscale')
     parser.add_argument('--s31-reader-panel37', action='store_true', help='Explicit local S31 GL37 panel experiment; cleanup and normal builds stay native48')

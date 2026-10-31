@@ -237,6 +237,10 @@ python3 tools/build_firmware.py --board metalio47 --python /path/to/idf-python/b
 
 `--idf-pico`、`--idf-metalio47` 可代替 SDK 环境变量；`--output` 修改输出目录。离线构建可用 `--managed-pico`、`--managed-metalio47` 指定与各自锁文件匹配的 `managed_components` 缓存。`--dry-run` 显示计划，`--board all --list` 显示支持的设备。工具仅编译和打包，不打开串口。
 
+微信读书调试日志默认不编译；本地诊断时显式加 `--weread-debug`，固件会写 `/sdcard/weread-debug.log` 并以 `wereadlog` 标签输出串口。交付构建不要带该参数，避免正式固件保留调试字符串和落盘写入。
+
+WeRead debug logging is off by default. Enable it explicitly with `--weread-debug` for local diagnostics; the firmware then writes `/sdcard/weread-debug.log` and mirrors the `wereadlog` tag to serial. Delivery builds must omit the flag so debug strings and SD writes are not compiled in.
+
 构建器从同一维护源码生成独立的临时设备视图，分开保存配置、依赖、CMake 缓存、日志及产物：
 
 ```text
