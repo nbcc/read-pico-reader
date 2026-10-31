@@ -102,14 +102,14 @@ WiFi 和热点传书网页都有「状态栏签名」，保存或清空后写入
 
 ## 自行编译
 
-需要 ESP-IDF **v6.1**，目标芯片为 ESP32-S3：
+仓库只有一份共享的 `main/` 与 `components/` 源码；`boards/<板型>/` 提供硬件后端、sdkconfig、分区表和依赖锁。用 `--board pico|metalio47` 选择设备，并准备对应的 ESP-IDF **v6.1** SDK：
 
 ```sh
-idf.py set-target esp32s3
-idf.py build
+python3 tools/build_firmware.py --board pico --python /path/to/idf-python/bin/python
+python3 tools/build_firmware.py --board metalio47 --python /path/to/idf-python/bin/python
 ```
 
-`sdkconfig.defaults` 使用本开发板对应的 Flash/PSRAM 时序；`sdkconfig.ci` 仅用于编译检查。硬件资料请看 [MindReset 官方文档](https://dot.mindreset.tech/docs/read_0)。预编译固件仅面向 RDP-G01-W。
+Pico 是 ESP32-S3（Xtensa），Metalio 是 ESP32-S31（RISC-V）；两者需要各自的 SDK/工具链、配置和输出目录，固件不能跨板型刷写。Windows 可运行 `tools\build_board.ps1 -Board pico|metalio47`。完整构建矩阵、分区表和烧录地址见 [docs/BOARDS.md](docs/BOARDS.md)。预编译固件仅面向 RDP-G01-W。
 
 ## 书籍与字体
 

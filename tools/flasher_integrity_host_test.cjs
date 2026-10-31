@@ -5,19 +5,20 @@
 const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:assert/strict');
 const {webcrypto, createHash} = require('node:crypto');
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
-const original = JSON.parse(fs.readFileSync('flash/manifest.json'));
+const path = require('node:path');
+const assets = path.join(__dirname, 'fixtures/flasher');
+const original = JSON.parse(fs.readFileSync(path.join(assets, 'manifest.json')));
 const bytes = new Map();
 const manifest = JSON.parse(JSON.stringify(original));
 for (const part of manifest.builds[0].parts) {
-  const data = Buffer.alloc(part.offset === 0x10000 ? 288 : 64, part.offset & 255);
+  const data = Buffer.alloc(part.offset === 0x10000 ? 256 : 64, part.offset & 255);
   if (part.offset === 0x10000) {
-    data[0] = 0xe9; data.writeUInt16LE(9,12); data.writeUInt32LE(0xabcd5432, 32);
+    data[0] = 0xe9; data.writeUInt32LE(0xabcd5432, 32);
     data.write(manifest.version, 48); data.write('Read_Pico', 80);
   }
-  if(part.offset===0){data[0]=0xe9;data.writeUInt16LE(9,12);}
   bytes.set(part.path, data); part.size = data.length; part.sha256 = sha(data);
 }
-const script = fs.readFileSync('flash/flasher-integrity.js', 'utf8');
+const script = fs.readFileSync(path.join(assets, 'flasher-integrity.js'), 'utf8');
 let fault, calls = [], live = new Set();
 class CheckedURL extends URL {
   static createObjectURL(blob) {const url = URL.createObjectURL(blob); live.add(url); return url;}
@@ -78,7 +79,7 @@ async function verify(snapshot) {
 
   // 实际适配器必须先请求用户串口，再校验，成功后才打开并交给安装器。
   // The actual adapter requests the user's port first, verifies next, and only then opens it for the installer.
-  let adapter = fs.readFileSync('flash/vendor/web/install-button.js', 'utf8').split(';class t extends')[0];
+  let adapter = fs.readFileSync(path.join(assets, 'install-button.js'), 'utf8').split(';class t extends')[0];
   adapter = adapter.replace(/import\("[^"\n]+"\)/g, 'Promise.resolve({i:{}})') + ';globalThis.invoke=e;';
   let events = [], alerts = [], listener, disposed = 0, opens = 0;
   const port = {open: async () => {opens++; events.push('open');}, close: async () => events.push('close')};

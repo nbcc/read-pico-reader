@@ -16,9 +16,16 @@
 
 #include "ttf_font.h"
 #include "text_glue.h"
+#include "../kiiko_board_config.h"
 #include "ttf_stroke_filter.h"
 
 #include <dirent.h>
+#if KIIKO_BOARD_METALIO47
+#include <errno.h>
+#include "online_font_names.h"
+#include "font_filename.h"
+#else
+#endif
 #include <fcntl.h>
 #include <math.h>
 #include <stdint.h>
@@ -27,11 +34,19 @@
 #include <string.h>
 #include <strings.h>
 #include <unistd.h>
+#if KIIKO_BOARD_METALIO47
+#include <sys/stat.h>
+#else
+#endif
 
 #include "settings.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#if KIIKO_BOARD_METALIO47
+#include "metalio_memory.h"
+#else
+#endif
 
 static void* ttf_malloc(size_t size, void* userdata) {
     (void)userdata;
@@ -55,6 +70,14 @@ static void ttf_free(void* ptr, void* userdata) {
 
 /* ---- 调参 / Tunables ---- */
 // 光栅化位图 LRU 上限，PSRAM。/ Raster bitmap LRU cap, PSRAM.
+#if KIIKO_BOARD_METALIO47
+// 多字体共享S31预算：有余量时1MiB/768KiB，压力时回到320KiB。
+// S31 faces share an adaptive 1MiB/768KiB budget, falling back to320KiB under pressure.
+// 扩容保留插图连续空间；淘汰全局最旧字形，不清空仍在用的字体槽。
+// Growth reserves contiguous image memory; evict global LRU glyphs, preserving face slots.
+#define TTF_CACHE_LIMIT (KIIKO_BOARD_TTF_CACHE_LIMIT_KB * 1024u)
+#define TTF_CACHE_PRESSURE_LIMIT (KIIKO_BOARD_TTF_CACHE_PRESSURE_KB * 1024u)
+#else
 // 字形缓存的总预算。TTF_CACHE_LIMIT 原来是每槽的，多槽之后那是 4 × 512 KB，而字体字节、
 // loca 和字形表本身已经吃掉好几 MB；抽干 PSRAM 的症状不是文字出问题，而是插图解码拿不到
 // 连续内存——翻几页之后图片就没了（诊断实测：图要 384 KB，只剩 269 KB）。
@@ -64,7 +87,8 @@ static void ttf_free(void* ptr, void* userdata) {
 // show up as broken text but as illustration decoding that cannot get a contiguous block: images
 // vanish after a few page turns (measured: an image wanted 384 KB with 269 KB left).
 // 320 KB still re-rasterizes a page of body text; the cost is a few extra glyphs per turn.
-#define TTF_CACHE_LIMIT (320 * 1024)
+#define TTF_CACHE_LIMIT (KIIKO_BOARD_TTF_CACHE_LIMIT_KB * 1024u)
+#endif
 // 哈希桶数。/ Hash buckets.
 #define TTF_CACHE_BUCKETS 256
 // 两档字号的像素高，对齐 ui_kit 正文/标题。/ Small/large px, matches ui_kit body/title.
@@ -113,6 +137,10 @@ typedef struct glyph_entry {
     int16_t advance_x;
     uint8_t* bitmap;
     size_t bitmap_bytes;
+#if KIIKO_BOARD_METALIO47
+    uint64_t cache_tick;
+#else
+#endif
     struct glyph_entry* hash_next;
     struct glyph_entry* lru_prev;
     struct glyph_entry* lru_next;
@@ -167,6 +195,13 @@ typedef struct {
 // `s->name` accesses and inside this struct body.
 typedef struct {
     int f_fd;
+#if KIIKO_BOARD_METALIO47
+    bool f_io_suspended;
+    bool f_io_ready;
+    off_t f_io_position;
+    struct stat f_io_stat;
+#else
+#endif
     const uint8_t* f_mem;
     uint32_t f_mem_len;
     bool f_mem_owned;      ///< f_mem 在堆上、关闭槽位时释放 / f_mem is heap, freed on close
@@ -224,6 +259,10 @@ typedef struct {
     glyph_entry_t* f_lru_head;
     glyph_entry_t* f_lru_tail;
     size_t f_cache_bytes;
+#if KIIKO_BOARD_METALIO47
+    bool f_preview;        ///< 临时名称预览不映射整份 glyf/gvar / transient names never map full outline tables
+#else
+#endif
     bool f_used;           ///< 槽位已被占用 / the slot is in use
 } ttf_slot_t;
 
@@ -608,16 +647,28 @@ static const char* font_basename(const char* path) {
 
 // Finder 拷到 FAT 会留下 ._xxx.ttf（AppleDouble）和 .DS_Store，不是真字体。
 static bool is_junk_name(const char* name) {
+#if KIIKO_BOARD_METALIO47
+    return !strcmp(name,".") || !strcmp(name,"..");
+#else
     return name[0] == '.' || strncmp(name, "._", 2) == 0;
+#endif
 }
 
 static bool is_ttf_name(const char* name) {
+#if KIIKO_BOARD_METALIO47
+    return !is_junk_name(name) && font_filename_supported(name);
+#else
     if (is_junk_name(name)) return false;
     size_t len = strlen(name);
     return len >= 4 && strcasecmp(name + len - 4, ".ttf") == 0;
+#endif
 }
 
 static void font_stem(const char* path, char* out, size_t n) {
+#if KIIKO_BOARD_METALIO47
+    const char *name=font_basename(path);
+    if(!font_filename_make(name,out,n,false))snprintf(out,n,"Font-%08x",(unsigned)font_filename_hash(name));
+#else
     const char* slash = strrchr(path, '/');
     const char* name = slash != NULL ? slash + 1 : path;
     strlcpy(out, name, n);
@@ -625,6 +676,7 @@ static void font_stem(const char* path, char* out, size_t n) {
     if (len >= 4 && strcasecmp(out + len - 4, ".ttf") == 0) {
         out[len - 4] = '\0';
     }
+#endif
 }
 
 static int font_item_cmp(const void* a, const void* b) {
@@ -637,7 +689,11 @@ static bool catalog_has_name(
     const ttf_font_item_t* items, int n, const char* name
 ) {
     for (int i = 0; i < n; i++) {
+#if KIIKO_BOARD_METALIO47
+        if (strcasecmp(items[i].path, name) == 0) return true;
+#else
         if (strcasecmp(items[i].name, name) == 0) return true;
+#endif
     }
     return false;
 }
@@ -663,6 +719,44 @@ int ttf_font_scan(void) {
         if (dir == NULL) continue;
         struct dirent* ent;
         while ((ent = readdir(dir)) != NULL && s_catalog_n < TTF_FONT_MAX) {
+#if KIIKO_BOARD_METALIO47
+            if(!is_ttf_name(ent->d_name))continue;
+            char path[512];
+            if(snprintf(path,sizeof(path),"%s/%s",font_dir,ent->d_name)>=(int)sizeof(path))continue;
+            struct stat st;
+            if(stat(path,&st)||!S_ISREG(st.st_mode))continue;
+            if(!strncmp(ent->d_name,"._",2)) {
+                unsigned char magic[4]={0};FILE *sidecar=fopen(path,"rb");
+                if(sidecar){size_t got=fread(magic,1,4,sidecar);fclose(sidecar);
+                    if(got==4&&!memcmp(magic,"\0\5\26\7",4))continue;}
+            }
+            // 仅原本无法保存的超长路径规范化文件名；不改字节、不覆盖任何现有文件。
+            // Normalize only paths that cannot be persisted; preserve font bytes and never overwrite existing files.
+            if(strlen(path)>=TTF_FONT_PATH_MAX) {
+                size_t prefix=strlen(font_dir)+1;
+                char alias[TTF_FONT_PATH_MAX],target[TTF_FONT_PATH_MAX];
+                if(prefix+25>=TTF_FONT_PATH_MAX ||
+                   !font_filename_make(ent->d_name,alias,TTF_FONT_PATH_MAX-prefix-5,true))continue;
+                bool moved=false;
+                for(unsigned attempt=0;attempt<128;++attempt) {
+                    size_t stem=strlen(alias)-4;
+                    int length=attempt?snprintf(target,sizeof(target),"%s/%.*s-%03x%s",font_dir,(int)stem,alias,attempt,alias+stem):
+                        snprintf(target,sizeof(target),"%s/%s",font_dir,alias);
+                    if(length>=(int)sizeof(target))break;
+                    struct stat existing;
+                    if(!stat(target,&existing))continue;
+                    if(errno!=ENOENT)break;
+                    moved=!rename(path,target);break;
+                }
+                if(!moved)continue;
+                snprintf(path,sizeof(path),"%s",target);
+                rewinddir(dir);
+            }
+            if(catalog_has_name(s_catalog,s_catalog_n,path))continue;
+            font_stem(path,s_catalog[s_catalog_n].name,sizeof(s_catalog[0].name));
+            snprintf(s_catalog[s_catalog_n].path,sizeof(s_catalog[0].path),"%s",path);
+            ++s_catalog_n;
+#else
             if (ent->d_name[0] == '.') continue; // Ignore macOS ._ font sidecars.
             if (!is_ttf_name(ent->d_name)) continue;
             char name[TTF_FONT_NAME_MAX];
@@ -670,17 +764,23 @@ int ttf_font_scan(void) {
             if (name[0] == '\0' || catalog_has_name(s_catalog, s_catalog_n, name)) {
                 continue;
             }
-            int path_len = snprintf(
+            snprintf(
                 s_catalog[s_catalog_n].path, sizeof(s_catalog[s_catalog_n].path),
                 "%s/%s", font_dir, ent->d_name
             );
-            // 超长路径不能截断后当成另一份字库。/ Never register a truncated path as a different font file.
-            if (path_len < 0 || (size_t)path_len >= sizeof(s_catalog[s_catalog_n].path)) continue;
             strlcpy(s_catalog[s_catalog_n].name, name, sizeof(s_catalog[0].name));
             s_catalog_n++;
+#endif
         }
         closedir(dir);
     }
+#if KIIKO_BOARD_METALIO47
+    bool duplicate[TTF_FONT_MAX]={0};
+    for(int i=0;i<s_catalog_n;++i)for(int j=0;j<i;++j)
+        if(!strcasecmp(s_catalog[i].name,s_catalog[j].name))duplicate[i]=duplicate[j]=true;
+    for(int i=0;i<s_catalog_n;++i)if(duplicate[i])
+        font_filename_distinguish(s_catalog[i].name,sizeof(s_catalog[i].name),s_catalog[i].path);
+#endif
     if (s_catalog_n > 1) {
         qsort(s_catalog, (size_t)s_catalog_n, sizeof(s_catalog[0]), font_item_cmp);
     }
@@ -740,6 +840,10 @@ const char* ttf_font_display_name(void) {
 
 const char* ttf_font_localized_name(const char* stem) {
     if (!stem) return "";
+#if KIIKO_BOARD_METALIO47
+    const char *online=online_font_catalog_name(stem);
+    if(online)return online;
+#endif
     if (!strcasecmp(stem, "Song")) return "思源宋体";
     if (!strcasecmp(stem, "Hei")) return "思源黑体";
     if (!strcasecmp(stem, "Kai")) return "思源楷体";
@@ -1755,7 +1859,15 @@ static void lru_detach(glyph_entry_t* entry) {
     entry->lru_next = NULL;
 }
 
+#if KIIKO_BOARD_METALIO47
+static uint64_t s_cache_tick;
+#else
+#endif
 static void lru_touch(glyph_entry_t* entry) {
+#if KIIKO_BOARD_METALIO47
+    entry->cache_tick=++s_cache_tick;
+#else
+#endif
     if (lru_head == entry) return;
     lru_detach(entry);
     entry->lru_next = lru_head;
@@ -1832,11 +1944,37 @@ static void cache_evict_one(void) {
     heap_caps_free(victim);
 }
 
+#if KIIKO_BOARD_METALIO47
+static bool cache_reserve(size_t extra) {
+    // 各字体槽按实际使用时间统一淘汰，避免一个槽超预算就清空全部字形。
+    // Evict by global slot recency instead of flushing every face when one slot exceeds its budget.
+    size_t available=heap_caps_get_free_size(METALIO_PSRAM)+s_cache_total;
+    size_t cap=available>=6u*1024u*1024u?TTF_CACHE_LIMIT:
+        available>=4u*1024u*1024u?KIIKO_BOARD_TTF_CACHE_MID_KB*1024u:TTF_CACHE_PRESSURE_LIMIT;
+    const bool grow=metalio_cache_can_grow(extra);
+    if(!grow)cap=TTF_CACHE_PRESSURE_LIMIT;
+    while(s_cache_total && s_cache_total+extra>cap) {
+        int victim=-1;uint64_t oldest=UINT64_MAX;
+        for(int i=0;i<TTF_FONT_SLOTS;++i) {
+            glyph_entry_t *tail=s_slots[i].f_lru_tail;
+            if(tail&&tail->cache_tick<oldest){oldest=tail->cache_tick;victim=i;}
+        }
+        if(victim<0)break;
+        int keep=s_cur_index;s_cur_index=victim;s_cur=&s_slots[victim];cache_evict_one();
+        s_cur_index=keep;s_cur=&s_slots[keep];
+#else
 static void cache_reserve(size_t extra) {
     while (lru_tail != NULL && s_cache_total + extra > TTF_CACHE_LIMIT) {
         cache_evict_one();
+#endif
     }
+#if KIIKO_BOARD_METALIO47
+    // 基础 320KiB 不受可选缓存的预留门禁阻断，低内存仍按原路径尝试画字。
+    // Keep essential baseline glyph allocation available even when optional cache growth is denied.
+    return s_cache_total+extra<=cap;
+#else
     if (s_cache_total + extra > TTF_CACHE_LIMIT) cache_clear_all();
+#endif
 }
 
 static glyph_entry_t* cache_lookup(uint32_t codepoint, int size) {
@@ -1866,7 +2004,11 @@ static glyph_entry_t* rasterize_glyph(uint32_t codepoint, int pixel_height) {
 
     if (width > 1024 || height > 1024 || (size_t)width * height > TTF_CACHE_LIMIT / 2) return NULL;
     size_t bitmap_bytes = (size_t)width * (size_t)height;
+#if KIIKO_BOARD_METALIO47
+    if(!cache_reserve(bitmap_bytes + sizeof(glyph_entry_t)))return NULL;
+#else
     cache_reserve(bitmap_bytes + sizeof(glyph_entry_t));
+#endif
 
     glyph_entry_t* entry = heap_caps_calloc(
         1, sizeof(*entry), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
@@ -1900,7 +2042,13 @@ static glyph_entry_t* rasterize_glyph(uint32_t codepoint, int pixel_height) {
         entry->bitmap = adjusted;
         width += 2*pad; height += 2*pad; x0 -= pad; y0 -= pad;
         bitmap_bytes = adjusted_bytes;
+#if KIIKO_BOARD_METALIO47
+        if(!cache_reserve(bitmap_bytes + sizeof(*entry))){
+            heap_caps_free(entry->bitmap);heap_caps_free(entry);return NULL;
+        }
+#else
         cache_reserve(bitmap_bytes + sizeof(*entry));
+#endif
     }
     int advance = 0;
     int lsb = 0;
@@ -2174,6 +2322,10 @@ static void abandon_font_source(void) {
 // Clears the current slot only. The public ttf_font_unload() always acts on slot 0; see
 // the font-slot section further down.
 static void unload_here(void) {
+#if KIIKO_BOARD_METALIO47
+    s_cur->f_io_suspended = false;
+#else
+#endif
     font_ready = false;
     cache_reset();
     io_unmap();
@@ -2225,14 +2377,22 @@ static esp_err_t load_opened_font(void) {
 
     // CFF 没有 glyf 表，长度为零，不必去映射。
     // A CFF face has no glyf table; its length is zero and there is nothing to map.
+#if KIIKO_BOARD_METALIO47
+    if (file_glyf_len && !s_cur->f_preview) {
+#else
     if (file_glyf_len) {
+#endif
         try_map_table(
             file_glyf_off, file_glyf_len, &glyf_ram, &glyf_ram_off, &glyf_ram_len, "glyf"
         );
     }
 
     load_variation(header, sizeof(header));
+#if KIIKO_BOARD_METALIO47
+    if (gvar_ready && file_gvar_len > 0 && !s_cur->f_preview) {
+#else
     if (gvar_ready && file_gvar_len > 0) {
+#endif
         try_map_table(
             file_gvar_off, file_gvar_len,
             &gvar_ram, &gvar_ram_off, &gvar_ram_len, "gvar"
@@ -2465,6 +2625,12 @@ static esp_err_t open_path_here(const char* path) {
         return ttf_font_open_builtin();
     }
 
+#if KIIKO_BOARD_METALIO47
+    // 当前字库已就绪时复用缓存；浅睡暂停的句柄必须走恢复/重新加载。
+    // Reuse a ready face and its glyphs; suspended file handles must be resumed/reloaded.
+    if (font_ready && !s_cur->f_io_suspended && !strcmp(path, font_path)) return ESP_OK;
+#else
+#endif
     char prev[TTF_FONT_PATH_MAX];
     strlcpy(prev, font_path, sizeof(prev));
     bool had = font_ready;
@@ -2475,12 +2641,30 @@ static esp_err_t open_path_here(const char* path) {
 
     font_fd = open_font_file(path);
     if (font_fd < 0) {
+#if KIIKO_BOARD_METALIO47
+        int cause = errno;
+        esp_err_t failure = cause == ENOENT || cause == ENOTDIR ? ESP_ERR_NOT_FOUND :
+                            cause == ENOMEM ? ESP_ERR_NO_MEM : ESP_FAIL;
+        ESP_LOGW(TAG, "TTF open failed: %s errno=%d", path, cause);
+#else
         ESP_LOGW(TAG, "TTF missing: %s", path);
+#endif
         if (prev_file) {
             font_fd = try_open_path(prev);
+#if KIIKO_BOARD_METALIO47
+            if (font_fd >= 0 && load_opened_font() == ESP_OK) return failure;
+#else
             if (font_fd >= 0) return load_opened_font();
+#endif
         }
+#if KIIKO_BOARD_METALIO47
+        // 恢复旧字库不等于新选择成功；始终向调用者保留失败结果。
+        // Restoring the previous face is not a successful new selection; preserve the original error.
+        (void)ttf_font_open_builtin();
+        return failure;
+#else
         return ttf_font_open_builtin() == ESP_OK ? ESP_ERR_NOT_FOUND : ESP_FAIL;
+#endif
     }
 
     esp_err_t err = load_opened_font();
@@ -2511,6 +2695,58 @@ esp_err_t ttf_font_open(const char* path) {
     s_cur_index = keep;
     s_cur = &s_slots[keep];
     return err;
+#if KIIKO_BOARD_METALIO47
+}
+
+// 名称预览只借空闲书内字体槽，不替换活动阅读字体；槽满就由界面回退普通标签。
+// Name previews borrow an empty embedded slot without replacing the reader face; full slots use a UI label.
+bool ttf_font_draw_preview(const char *path, uint8_t *fb, int x, int y, int px,
+                           const char *text, int width) {
+    if (!path || !fb || !text || !*text || width <= 0) return false;
+    ttf_font_slots_init();
+    int slot = TTF_FONT_SLOT_SYSTEM;
+    bool borrowed = !ttf_font_ready() || strcmp(path, ttf_font_path());
+    if (borrowed) {
+        for (slot = TTF_FONT_SLOT_SYSTEM + 1; slot < TTF_FONT_SLOTS; ++slot)
+            if (!s_slots[slot].f_used) break;
+        if (slot == TTF_FONT_SLOTS) return false;
+    }
+    int saved_weight = s_slots[slot].f_weight;
+    int keep = slot_lend(slot);
+    const ttf_run_t *saved_runs = s_draw_runs;
+    size_t saved_run_count = s_draw_run_count;
+    s_draw_runs = NULL; s_draw_run_count = 0;
+    bool ok = true;
+    if (borrowed) {
+        unload_here();
+        s_cur->f_used = true;
+        s_cur->f_preview = true;
+        s_cur->f_weight = s_slots[TTF_FONT_SLOT_SYSTEM].f_weight;
+        font_fd = open_font_file(path);
+        ok = font_fd >= 0 && ensure_work() && load_opened_font() == ESP_OK;
+    }
+    if (ok) {
+        ok = ttf_font_slot_has_text(slot, text);
+        if (ok) {
+            while (px > 12 && ttf_text_width_px(px, text) > width) --px;
+            int above = 0, below = 0;
+            ttf_measure_line_px(px, text, &above, &below);
+            ttf_draw_text_px(fb, x, y + (above - below) / 2, px, text,
+                             EPD_DRAW_ALIGN_CENTER, 0, 15);
+        }
+    }
+    if (borrowed) {
+        unload_here();
+        heap_caps_free(s_cur->f_io_data);
+        heap_caps_free(s_cur->f_io_run_buf);
+        slot_init(s_cur);
+        s_cur->f_weight = saved_weight;
+    }
+    s_draw_runs = saved_runs; s_draw_run_count = saved_run_count;
+    slot_restore(keep);
+    return ok;
+#else
+#endif
 }
 
 esp_err_t ttf_font_init(void) {
@@ -3103,3 +3339,48 @@ void ttf_draw_text_px_bw(
         cursor_x += glyph->advance_x;
     }
 }
+#if KIIKO_BOARD_METALIO47
+
+// 中文：浅睡恢复同一个槽和文件；不调用字体选择/设置保存，避免临时异常覆盖阅读字体。
+// English: Reopen the same face without font selection/settings writes, preserving reader intent.
+esp_err_t ttf_font_suspend_io(void) {
+    ttf_font_slots_init();
+    for (int i=0; i<TTF_FONT_SLOTS; ++i) {
+        ttf_slot_t *face = &s_slots[i];
+        if (face->f_fd < 0 || face->f_io_suspended) continue;
+        face->f_io_position = lseek(face->f_fd, 0, SEEK_CUR);
+        face->f_io_ready = face->f_ready;
+        if (face->f_io_position < 0 || fstat(face->f_fd, &face->f_io_stat)) return ESP_FAIL;
+        int result = close(face->f_fd);
+        face->f_fd = -1; face->f_io_suspended = true;
+        if (result) return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+esp_err_t ttf_font_resume_io(void) {
+    esp_err_t result = ESP_OK;
+    // 当前槽先占文件名额；闲置槽失败不能阻塞书架和当前字体恢复。
+    // Open the active slot first; an idle slot must not block current-face/media recovery.
+    for (int step=0; step<TTF_FONT_SLOTS; ++step) {
+        int i=(s_cur_index+step)%TTF_FONT_SLOTS;
+        ttf_slot_t *face = &s_slots[i];
+        if (!face->f_io_suspended) continue;
+        int fd = open(face->f_path, O_RDONLY);
+        struct stat now;
+        if (fd < 0 || fstat(fd, &now) || now.st_size != face->f_io_stat.st_size ||
+            now.st_mtime != face->f_io_stat.st_mtime || lseek(fd, face->f_io_position, SEEK_SET) < 0) {
+            if (fd >= 0) close(fd);
+            face->f_ready = false;
+            if (i == s_cur_index) result = ESP_FAIL;
+            continue;
+        }
+        face->f_fd = fd; face->f_io_suspended = false; face->f_ready = face->f_io_ready;
+    }
+    return result;
+}
+bool ttf_font_io_pending(void) {
+    for (int i=0; i<TTF_FONT_SLOTS; ++i) if (s_slots[i].f_io_suspended) return true;
+    return false;
+}
+#else
+#endif

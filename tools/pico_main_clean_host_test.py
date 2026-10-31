@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
-def select_source(text,board): return text
+from board_source_view import select_source
 from home_cover_cache_host_test import function
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -125,8 +125,8 @@ with tempfile.TemporaryDirectory(prefix='pico-main-clean-') as folder:
            '-fno-sanitize-recover=all','-Imain','-Imain/app','-Itools/shelf_waveform_host_stubs',
            '-Itools/waveform_host_stubs','-Icomponents/epdiy/include','-Icomponents/epdiy/src',
            '-Icomponents/e0470_epaper_waveform/include','-Icomponents/e0470_epaper_waveform/waveforms']
-    files=[str(d/'lut.c'),'main/display_main_waveform.c',
-           'components/e0470_epaper_waveform/e0470_epaper_waveform.c',
+    files=[str(d/'lut.c'),'boards/pico/src/main/display_main_waveform.c',
+           'boards/pico/src/components/e0470_epaper_waveform/e0470_epaper_waveform.c',
            'components/e0470_epaper_waveform/e0470_waveform_trim.c']
     for enabled in (0,1):
         exe=d/f'lut-{enabled}'
@@ -169,10 +169,10 @@ int main(void){
         exe=d/f'band-{phases}'
         subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-g','-fsanitize=address,undefined',
                         '-Itools/water_turn_stubs','-Icomponents/e0470_page_turn/include',str(d/'band.c'),
-                        'components/e0470_page_turn/e0470_page_turn.c','-o',str(exe)],cwd=ROOT,check=True)
+                        'boards/pico/src/components/e0470_page_turn/e0470_page_turn.c','-o',str(exe)],cwd=ROOT,check=True)
         subprocess.run([str(exe)],check=True)
     # Both the common implementation and the actual Pico override must select strength.
-    for scope_path in ('main/app/app_loop.c',):
+    for scope_path in ('main/app/app_loop.c','boards/pico/src/main/app/app_loop.c'):
         scope=r'''
     #include <assert.h>
     #include <stdbool.h>

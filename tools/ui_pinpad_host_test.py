@@ -102,6 +102,22 @@ int main(int argc,char **argv){
  assert(event(&pad,UI_GESTURE_PRESS,144,1132,&dirty)==UI_PIN_CHANGED);assert(event(&pad,UI_GESTURE_TAP,144,1132,&dirty)==UI_PIN_CANCEL);
  pad.blocked=true;assert(event(&pad,UI_GESTURE_PRESS,158,544,&dirty)==UI_PIN_NONE);
  assert(event(&pad,UI_GESTURE_PRESS,144,1132,&dirty)==UI_PIN_CHANGED);assert(event(&pad,UI_GESTURE_TAP,144,1132,&dirty)==UI_PIN_CANCEL);
+ pad.blocked=false;ui_pinpad_reset(&pad,NULL,"");pad.navigation=true;
+ for(int digit=0;digit<10;++digit){
+  ui_pinpad_reset(&pad,NULL,"");int col=digit?(digit-1)%3:1,row=digit?(digit-1)/3:3;
+  int x=158+184*col,y=532+148*row;
+  assert(event(&pad,UI_GESTURE_PRESS,x,y,&dirty)==UI_PIN_CHANGED&&dirty.y+dirty.height<=1088);
+  assert(event(&pad,UI_GESTURE_TAP,x,y,&dirty)==UI_PIN_CHANGED&&pad.digits[0]=='0'+digit);
+ }
+ ui_pinpad_reset(&pad,NULL,"");
+ assert(event(&pad,UI_GESTURE_PRESS,144,1044,&dirty)==UI_PIN_CHANGED);
+ assert(event(&pad,UI_GESTURE_TAP,144,1044,&dirty)==UI_PIN_CANCEL);
+ assert(event(&pad,UI_GESTURE_PRESS,540,1044,&dirty)==UI_PIN_CHANGED);
+ assert(event(&pad,UI_GESTURE_TAP,540,1044,&dirty)==UI_PIN_CHANGED);
+ assert(event(&pad,UI_GESTURE_PRESS,340,1140,&dirty)==UI_PIN_NONE);
+ memcpy(old,fb,684*1216/2);ui_pinpad_paint_input(fb,&pad);
+ for(int y=1088;y<1216;++y)for(int x=0;x<684;++x)assert(pixel(old,x,y)==pixel(fb,x,y));
+ pad.navigation=false;
  int before=fallbacks;fail_after=0;ui_pinpad_paint(fb,&pad,ui_pinpad_full());assert(fallbacks>before);fail_after=-1;
  ui_pinpad_end(&pad);ttf_font_cache_clear();size_t base=live;
  for(int i=0;i<2;++i){fail_after=i;ui_pinpad_begin(&pad,bg,"输入密码");assert(!pad.background&&!pad.key_snapshot);ui_pinpad_end(&pad);fail_after=-1;assert(live==base);}

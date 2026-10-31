@@ -39,6 +39,11 @@ enum EpdDrawError update_display_full(EpdiyHighlevelState*);
 enum EpdDrawError update_display_mode(EpdiyHighlevelState*, int);
 enum EpdDrawError update_display_mode_diff(EpdiyHighlevelState*, int);
 enum EpdDrawError update_display_fast_page(EpdiyHighlevelState*);
+enum {E0470_TURN_LTR,E0470_TURN_RTL};
+enum EpdDrawError update_display_water_turn(EpdiyHighlevelState*,EpdRect,int);
+EpdRect epd_full_screen(void);
+bool ui_nav_refresh_power(uint8_t *fb);
+EpdRect ui_nav_status_area(void);
 enum EpdDrawError update_display_white(EpdiyHighlevelState*);
 bool display_take_white_exit(void);
 void display_main_transition_arm(const void*, bool, bool);
@@ -67,8 +72,13 @@ const char* ttf_font_path(void);
 int ttf_font_open(const char*);
 int ttf_font_open_builtin(void);
 typedef struct { bool present, mounted; } read_pico_sd_info_t;
+#define READ_PICO_TRANSFER_UPLOADING 3
 int read_pico_sd_get_info(read_pico_sd_info_t*);
-void read_pico_sd_start_probe(void);
+int read_pico_sd_start_probe(void);
+void read_pico_sd_poll_health(void);
+bool read_pico_sd_needs_recovery(void);
+int read_pico_sd_start_recovery(void);
 
 int epd_rotated_display_width(void);
+int epd_rotated_display_height(void);
 void epd_fill_triangle(int,int,int,int,int,int,uint8_t,uint8_t*);

@@ -4,7 +4,7 @@
 from pathlib import Path
 import subprocess,tempfile
 root=Path(__file__).resolve().parents[1]
-s=(root/'main/sleep.c').read_text();a=s.index('static EpdiyHighlevelState *s_lock_hint_hl;');b=s.index('static void lock_arm_ioe_wakeup',a)
+s=(root/'boards/pico/src/main/sleep.c').read_text();a=s.index('static EpdiyHighlevelState *s_lock_hint_hl;');b=s.index('static void lock_arm_ioe_wakeup',a)
 unit=r'''
 #include <assert.h>
 #include <stdbool.h>

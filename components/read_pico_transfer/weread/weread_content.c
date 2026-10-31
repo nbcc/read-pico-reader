@@ -28,7 +28,7 @@ bool wr_make_content_json(const char *book_id, const char *chapter_uid, const ch
     char ps_encoded[256];
     if (!wr_encode_id(book_id, b, sizeof(b))) return false;
     if (!wr_encode_id(chapter_uid, c, sizeof(c))) return false;
-    snprintf(ct_text, sizeof(ct_text), "%u", ct);
+    snprintf(ct_text, sizeof(ct_text), "%u", (unsigned)ct);
     if (!wr_encode_id(ct_text, pc, sizeof(pc))) return false;
     if (!wr_url_encode(psvts, ps_encoded, sizeof(ps_encoded))) return false;
 
@@ -36,7 +36,7 @@ bool wr_make_content_json(const char *book_id, const char *chapter_uid, const ch
     char query[512];
     const int query_len = snprintf(query, sizeof(query),
                                    "b=%s&c=%s&ct=%u&pc=%s&prevChapter=false&ps=%s&r=%llu&sc=1&st=%d",
-                                   b, c, ct, pc, ps_encoded, (unsigned long long)r_value, style ? 1 : 0);
+                                   b, c, (unsigned)ct, pc, ps_encoded, (unsigned long long)r_value, style ? 1 : 0);
     if (query_len <= 0 || (size_t)query_len >= sizeof(query)) return false;
     char signature[WR_SIGN_CAP];
     if (!wr_sign_query(query, signature, sizeof(signature))) return false;
@@ -44,7 +44,7 @@ bool wr_make_content_json(const char *book_id, const char *chapter_uid, const ch
     const int json_len = snprintf(out, cap,
                                   "{\"b\":\"%s\",\"c\":\"%s\",\"r\":\"%llu\",\"ct\":\"%u\",\"ps\":\"%s\","
                                   "\"pc\":\"%s\",\"sc\":1,\"prevChapter\":false,\"st\":%d,\"s\":\"%s\"}",
-                                  b, c, (unsigned long long)r_value, ct, ps_encoded, pc, style ? 1 : 0,
+                                  b, c, (unsigned long long)r_value, (unsigned)ct, ps_encoded, pc, style ? 1 : 0,
                                   signature);
     return json_len > 0 && (size_t)json_len < cap;
 }

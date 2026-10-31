@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
-def select_source(text,board): return text
+from board_source_view import select_source
 root = Path(__file__).resolve().parents[1]
 raw_source = (root/'main/apps/app_image.c').read_text()
 prefix = r"""
@@ -196,7 +196,7 @@ int main(void){
  puts("PASS: real preview retains all16 gray levels;BW list scope;NULL/OOM/direct paths/siblings/media loss/pixel bounds");
 }
 """
-for board in ('pico',):
+for board in ('pico','metalio47'):
     overlay=root/'boards/pico/src/main/apps/app_image.c'
     actual=overlay.read_text() if board=='pico' and overlay.exists() else raw_source
     source=select_source(actual,board)

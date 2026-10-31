@@ -16,7 +16,11 @@
 #define TITLE_PATH_MAX 288
 #define TITLE_MAX 120
 #define RECORD_MAX (TITLE_PATH_MAX + TITLE_MAX + 8)
+#if KIIKO_BOARD_METALIO47
+static const char *NS = "mt_titles";
+#else
 static const char *NS = "rp_titles";
+#endif
 
 // 文件名识别只处理内存中的有界片段，不打开EPUB或改写TF文件。
 // Parse bounded in-memory spans only, without opening EPUBs or renaming SD files.

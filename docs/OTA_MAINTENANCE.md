@@ -21,16 +21,3 @@ Checks cover TLS 1.2/HTTP 1.1, validity/signatures, terminal-issuer compatibilit
 Before publication verify the actual Pages TLS1.2 chain against released roots, metadata, full image size/SHA, exact Range bytes and a released device download. Network availability cannot be guaranteed. The official-origin checker remains useful for site-certificate repair; healthy Pages OTA does not fix that separate issue. Do not silently restore the site image origin. Retain HTTPS validation and immutable binaries and clean up temporary certificate credentials.
 
 参考 / References: [Espressif certificate bundle](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/protocols/esp_crt_bundle.html), [Cloudflare Universal SSL API](https://developers.cloudflare.com/api/resources/ssl/subresources/universal/subresources/settings/methods/edit/).
-
-## Metalio EINK 4 Plus / S31
-
-- 官网先选择机型。Pico 原有版本和下载地址继续保留。
-- Metalio 首个联网 OTA 基础版本为 0.3.3-rc98；旧本地版先用 USB 或 TF 卡安装，TF 文件名 `Metalio-S31-update.bin`。
-- 清单优先 `https://wegooo-cell.github.io/read-pico-reader/metalio-s31-update.json`，官网同名清单备用；应用也优先 GitHub Pages，网络失败时用官网同名文件续传。两个源必须保持完全相同的固定版本字节和 SHA-256。
-- 项目 `Kiikoread_Metalio_S31`，芯片 ID 32，布局 `metalio-s31-dual-5m-v1`。启动器 0x2000，应用槽 0x10000 / 0x510000，各 5 MiB，otadata 0xd000。不能使用 Pico 的启动地址或分区。
-- 网页更新校验既有分区和已确认启动记录，默认保留设置；只有明确选择重新安装及清除机内设置，才重写基础包。清除设置不擦除 TF 卡或整片 Flash。设备 OTA 只写空闲槽，整包验证后切换启动槽。
-- Metalio 固件源码仍私有；公开站点和 Release 只发布已验证二进制、安装工具和使用说明。每版使用独立 `metalio-s31-v版本` tag；Pico 的 `v版本` tag 不变。
-
-## rc100 交叉签名验证构建
-
-两款 rc100 均启用 `CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY`。生产构建前执行 `python3 tools/prepare_tls_bundle.py "$IDF_PATH"`，使 IDF 6.1 只对证书包生成的合成根处理缺失日期，真实叶证书和中间证书仍检查有效期；不加入过期/撤销根，不关闭主机名或签名校验。GitHub Pages 保持优先源。

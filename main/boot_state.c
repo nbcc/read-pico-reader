@@ -33,6 +33,10 @@ enum {
     BOOT_RECOVERY_STORE = 16u,
 };
 static unsigned s_recovery_reasons;
+#if KIIKO_BOARD_METALIO47
+static bool s_lock_pending;
+bool pico_boot_lock_pending(void) { return s_lock_pending; }
+#endif
 typedef struct {
     uint32_t magic;
     uint16_t lengths[3];
@@ -137,6 +141,9 @@ void pico_boot_init(bool abnormal_reset) {
     s_interrupted = false;
     s_recovery = abnormal_reset;
     s_recovery_reasons = abnormal_reset ? BOOT_RECOVERY_RESET : 0;
+#if KIIKO_BOARD_METALIO47
+    s_lock_pending = false;
+#endif
     nvs_handle_t h;
     esp_err_t err = nvs_open(KIIKO_BOARD_STARTUP_NAMESPACE, NVS_READWRITE, &h);
     s_writable = err == ESP_OK;
@@ -159,6 +166,11 @@ void pico_boot_init(bool abnormal_reset) {
             }
             memset(&s_record, 0, sizeof(s_record));
         }
+#if KIIKO_BOARD_METALIO47
+        // 真实锁屏记录独立于字体/开书保护；看门狗不能把锁定当作普通首页启动。
+        // A validated lock record is independent of font/book recovery; watchdogs cannot turn it into an unlocked Home boot.
+        s_lock_pending = valid && s_record.resume_valid;
+#endif
     } else {
         s_recovery = true;
         s_recovery_reasons |= BOOT_RECOVERY_RECORD;
@@ -170,9 +182,9 @@ void pico_boot_init(bool abnormal_reset) {
     }
     if(s_record.opening[0]&&!book_file_path_supported(s_record.opening))s_record.opening[0]=0;
     if(s_record.blocked[0]&&!book_file_path_supported(s_record.blocked))s_record.blocked[0]=0;
-    if (s_record.starting || s_record.opening[0]) s_recovery = true;
     if (s_record.starting) s_recovery_reasons |= BOOT_RECOVERY_STARTING;
     if (s_record.opening[0]) s_recovery_reasons |= BOOT_RECOVERY_OPENING;
+    if (s_record.starting || s_record.opening[0]) s_recovery = true;
     if (s_record.opening[0]) {
         s_interrupted = true;
         memcpy(s_record.blocked, s_record.opening, sizeof(s_record.blocked));
@@ -185,11 +197,19 @@ void pico_boot_init(bool abnormal_reset) {
     }
     s_record.magic = BOOT_MAGIC;
     s_record.starting = 1;
+#if KIIKO_BOARD_METALIO47
+    // 门禁前再次复位仍须保留锁定；实际恢复仍由take_resume持久化消费，异常启动不放行开书。
+    // Retain the lock across another reset before the gate; take_resume still consumes persistently before book admission.
+    if (!s_lock_pending) {
+        s_record.resume_valid = 0;
+        s_record.reserved[0] = 0;
+    }
+#else
     s_record.resume_valid = 0;
     s_record.reserved[0] = 0;
+#endif
     if (store() != ESP_OK) {
-        s_resume_pending = false;
-        s_recovery = true;
+        s_resume_pending = false; s_recovery = true;
         s_recovery_reasons |= BOOT_RECOVERY_STORE;
     }
     ESP_LOGI("boot_state", "startup recovery=%d resume=%d reasons=0x%02x", s_recovery, s_resume_pending, s_recovery_reasons);
@@ -251,9 +271,15 @@ bool pico_boot_take_resume(pico_resume_t *resume) {
     }
     *resume = s_resume;
     s_resume_pending = false;
+#if KIIKO_BOARD_METALIO47
+    s_lock_pending = false;
+#endif
     return true;
 }
 void pico_boot_clear_resume(void) {
+#if KIIKO_BOARD_METALIO47
+    s_lock_pending = false;
+#endif
     s_resume_pending = false;
     if (!s_record.resume_valid) return;
     s_record.resume_valid = 0;

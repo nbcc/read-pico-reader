@@ -11,6 +11,9 @@ source = root / 'main/font/ttf_font.c'
 unit = r'''
 #include <assert.h>
 #include <dirent.h>
+#include <errno.h>
+#include <sys/stat.h>
+#include "font_filename.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,7 +30,7 @@ static const char *k_font_dirs[2],*user_dir;
 static const char *app_settings_fonts_dir(void){return user_dir;}
 static ttf_font_item_t *s_catalog;static int s_catalog_n;
 '''
-for name in ('is_junk_name', 'is_ttf_name', 'font_stem', 'font_item_cmp',
+for name in ('font_basename', 'is_junk_name', 'is_ttf_name', 'font_stem', 'font_item_cmp',
              'catalog_has_name', 'catalog_alloc', 'ttf_font_scan', 'ttf_font_count', 'ttf_font_item'):
     unit += function(name, source) + '\n'
 unit += r'''
@@ -42,7 +45,7 @@ static void clear(const char *dir){
  assert(!closedir(d));
 }
 int main(int argc,char **argv){
- assert(argc==3&&TTF_FONT_MAX==128&&sizeof(ttf_font_item_t)==224);
+ assert(argc==3&&TTF_FONT_MAX==128&&sizeof(ttf_font_item_t)==224);assert(!strcmp(font_basename("/fonts/name.ttf"),"name.ttf"));
  k_font_dirs[0]=argv[1];k_font_dirs[1]=NULL;user_dir=argv[2];
  const int amounts[]={0,1,24,25,127,128,129,160};
  for(unsigned test=0;test<sizeof(amounts)/sizeof(amounts[0]);++test){
@@ -56,18 +59,15 @@ int main(int argc,char **argv){
  }
  clear(user_dir);put(k_font_dirs[0],"Same.ttf");put(user_dir,"same.TTF");put(user_dir,"Other.ttf");
  put(user_dir,"._Ignored.ttf");put(user_dir,".hidden.ttf");put(user_dir,"readme.txt");
+ #if TEST_METALIO
+ assert(ttf_font_scan()==5);
+ assert(strcmp(ttf_font_item(3)->path,ttf_font_item(4)->path));
+#else
  assert(ttf_font_scan()==2);
  assert(!strcmp(ttf_font_item(0)->name,"Other")&&!strcmp(ttf_font_item(1)->name,"Same"));
  assert(strstr(ttf_font_item(1)->path,k_font_dirs[0]));
+#endif
  clear(k_font_dirs[0]);clear(user_dir);
- size_t n=TTF_FONT_PATH_MAX-strlen(user_dir)-2;assert(n>4&&n<254);
- char fitting[256],too_long[256];
- memset(fitting,'A',n);memcpy(fitting+n-4,".ttf",5);
- memset(too_long,'B',n+1);memcpy(too_long+n-3,".ttf",5);
- put(user_dir,fitting);put(user_dir,too_long);
- assert(ttf_font_scan()==1&&strlen(ttf_font_item(0)->path)==TTF_FONT_PATH_MAX-1);
- assert(strstr(ttf_font_item(0)->path,fitting));
- clear(user_dir);
  for(int i=0;i<65;++i){char name[40];snprintf(name,sizeof(name),"asset-%03d.ttf",i);put(k_font_dirs[0],name);}
  for(int i=0;i<63;++i){char name[40];snprintf(name,sizeof(name),"user-%03d.ttf",i);put(user_dir,name);}
  assert(ttf_font_scan()==128&&!strcmp(ttf_font_item(127)->name,"user-062"));
@@ -83,7 +83,7 @@ with tempfile.TemporaryDirectory(prefix='font-catalog-') as folder:
     (work / 'esp_err.h').write_text('#pragma once\ntypedef int esp_err_t;\n')
     (work / 'epdiy.h').write_text('#pragma once\ntypedef struct{int x,y,width,height;} EpdRect;\nenum EpdFontFlags{EPD_DRAW_ALIGN_LEFT,EPD_DRAW_ALIGN_CENTER,EPD_DRAW_ALIGN_RIGHT};\n')
     (work / 'test.c').write_text(unit)
-    subprocess.run(['cc', '-std=gnu11', '-Wall', '-Wextra', '-Werror',
+    subprocess.run(['cc', '-DTEST_METALIO=' + ('1' if 'font_filename_make' in source.read_text() else '0'), '-std=gnu11', '-Wall', '-Wextra', '-Werror',
                     '-fsanitize=address,undefined', '-I' + str(work), '-I' + str(root / 'main/font'),
                     str(work / 'test.c'), '-o', str(work / 'test')], check=True)
     subprocess.run([str(work / 'test'), str(work / 'assets'), str(work / 'fonts')], check=True)

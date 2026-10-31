@@ -46,6 +46,7 @@ static int rotation;
 #define BYTES (W*H/2)
 static uint8_t frame[BYTES],saved[BYTES],again[BYTES];
 static int live,allocs,max_bytes,fail_after=-1;
+static size_t source_reads;
 static size_t current_bytes,peak_bytes;
 static struct {void *ptr;size_t bytes;} memory[16];
 static bool oom,fast;
@@ -54,7 +55,7 @@ static int epd_height(void){return H;}
 static int epd_get_rotation(void){return rotation;}
 static int epd_rotated_display_width(void){return rotation&1?H:W;}
 static int epd_rotated_display_height(void){return rotation&1?W:H;}
-static uint8_t epd_get_pixel(int x,int y,int w,int h,const uint8_t *fb){assert(w==W&&h==H&&x>=0&&x<w&&y>=0&&y<h);unsigned value=fb[(size_t)y*w/2+x/2];return (uint8_t)((x&1?value>>4:value&15)<<4);}
+static uint8_t epd_get_pixel(int x,int y,int w,int h,const uint8_t *fb){++source_reads;assert(w==W&&h==H&&x>=0&&x<w&&y>=0&&y<h);unsigned value=fb[(size_t)y*w/2+x/2];return (uint8_t)((x&1?value>>4:value&15)<<4);}
 static void epd_draw_pixel(int x,int y,uint8_t gray,uint8_t *fb){
  if(x<0||y<0||x>=epd_rotated_display_width()||y>=epd_rotated_display_height())return;
  int px=x,py=y;
@@ -99,6 +100,36 @@ code+=function('main/ui/ui_nav.c','ui_nav_back')+function('main/apps/app_book.c'
 code+=r'''
 static void patterned(void){for(size_t i=0;i<BYTES;++i)frame[i]=(uint8_t)(i*13u+7u);memcpy(saved,frame,BYTES);}
 int main(int argc,char **argv){
+ // 阅读背景只略增同一七抽头的模糊；普通路径像素/缓存和控件仍按原规则。
+ // Slight reader frost reuses seven taps; ordinary pixels/caches and controls retain their rules.
+ rotation=3;memset(frame,255,BYTES);
+ EpdRect frost_area={100,300,200,50};
+ for(int y=300;y<350;++y)for(int x=100;x<300;++x)epd_draw_pixel(x,y,(x%8<2)?0:255,frame);
+ memcpy(saved,frame,BYTES);assert(ui_glass_panel(frame,frost_area,0,0,0));
+ int old_variation=0,new_variation=0;
+ for(int x=130;x<270;++x)old_variation+=abs((int)pixel(frame,x,325)-pixel(frame,x+1,325));
+ memcpy(frame,saved,BYTES);int before_frost=allocs;
+ assert(ui_glass_panel_frost(frame,frost_area,0,0,0,true)&&allocs==before_frost+1);
+ for(int x=130;x<270;++x)new_variation+=abs((int)pixel(frame,x,325)-pixel(frame,x+1,325));
+ fprintf(stderr,"reader frost variation %d -> %d\n",old_variation,new_variation);assert(new_variation<old_variation);
+ for(int y=0;y<1216;++y)for(int x=0;x<684;++x)
+  if(x<100||x>=300||y<300||y>=350)assert(pixel(frame,x,y)==pixel(saved,x,y));
+
+ // 优化前的完整像素校验；短图、边界夹取和四旋转必须逐位一致，每个源像素只读取一次。
+ // Pre-optimization whole-frame goldens cover short panels, clamped edges and four rotations; read each source pixel only once.
+ const EpdRect cases[]={{18,88,648,168},{31,102,108,108},{3,9,3,1},{1,2,11,2},{0,0,1,1},{20,44,41,7},{20,44,41,8}};
+ const int radius[]={56,54,1,8,1,10,10},white[]={25,25,0,100,-1,101,25};
+ const uint32_t golden[]={2950348408u,3794443602u,1916862657u,3172911537u};
+ for(rotation=0;rotation<4;++rotation){
+  uint32_t hash=2166136261u;
+  for(unsigned i=0;i<sizeof(cases)/sizeof(cases[0]);++i){
+   patterned();size_t reads=source_reads;
+   assert(ui_glass_panel(frame,cases[i],radius[i],white[i],160));
+   assert(source_reads-reads==(size_t)cases[i].width*cases[i].height);
+   for(size_t j=0;j<BYTES;++j){hash^=frame[j];hash*=16777619u;}
+  }
+  assert(hash==golden[rotation]);
+ }
  for(rotation=0;rotation<4;++rotation){
   // 检查实际收藏图标像素，不能只验证选择了哪个枚举。
   // Check actual favorite pixels, not merely which enum was selected.
@@ -112,8 +143,8 @@ int main(int argc,char **argv){
   for(int y=0;y<epd_rotated_display_height();++y)for(int x=0;x<epd_rotated_display_width();++x)
    if(x<584||x>=648||y<76||y>=146)assert(ui_read_pixel(frame,x,y)==ui_read_pixel(saved,x,y));
   for(int policy=0;policy<3;++policy){
-   patterned();int before=allocs;ui_quick_menu_draw(frame,true,false);
-   assert(allocs==before+7&&live==1&&current_bytes==23328&&peak_bytes<=170856);int grays=0;
+   patterned();int before=allocs;ui_quick_menu_draw(frame,true,false,false);
+   assert(allocs==before+7&&live==2&&current_bytes==113616&&peak_bytes<=203688);int grays=0;
    for(int y=0;y<epd_rotated_display_height();++y)for(int x=0;x<epd_rotated_display_width();++x){
     bool mask=y<76||(x>=18&&x<666&&y>=88&&y<256);
     uint8_t p=pixel(frame,x,y);
@@ -122,7 +153,7 @@ int main(int argc,char **argv){
    }
    assert(grays>1000);
    assert(pixel(frame,18,88)==pixel(saved,18,88)&&pixel(frame,665,88)==pixel(saved,665,88));
-   memcpy(again,frame,BYTES);memcpy(frame,saved,BYTES);ui_quick_menu_draw(frame,true,false);assert(!memcmp(frame,again,BYTES));
+   memcpy(again,frame,BYTES);memcpy(frame,saved,BYTES);ui_quick_menu_draw(frame,true,false,false);assert(!memcmp(frame,again,BYTES));
    // 每次触控只恢复圆键，底图/其他圆键不变；连按不分配、不重算玻璃。
    // Each contact restores only its key; rapid presses allocate nothing or regenerate glass.
    int input_allocs=allocs;
@@ -145,12 +176,17 @@ int main(int argc,char **argv){
      assert(!memcmp(frame,again,BYTES));
     }
    }
-   assert(allocs==input_allocs&&current_bytes==23328);
-   ui_quick_menu_end();ui_quick_menu_end();assert(!live&&!current_bytes);
+   assert(allocs==input_allocs&&current_bytes==113616);
+   // 仅顶部缓存即可精确收起，拒绝另一帧或旋转后的缓存；收起与点按都不分配。
+   // A top-only snapshot restores exactly; reject other frames/rotations and allocate nothing on close or presses.
+   assert(!ui_quick_menu_restore(again));
+   int saved_rotation=rotation;rotation=(rotation+1)%4;assert(!ui_quick_menu_restore(frame));rotation=saved_rotation;
+   assert(ui_quick_menu_restore(frame)&&allocs==input_allocs&&!memcmp(frame,saved,BYTES));
+   ui_quick_menu_end();ui_quick_menu_end();assert(!live&&!current_bytes&&!ui_quick_menu_restore(frame));
 
   }
   for(int failure=0;failure<7;++failure){
-   patterned();fail_after=failure;ui_quick_menu_draw(frame,true,false);fail_after=-1;
+   patterned();fail_after=failure;ui_quick_menu_draw(frame,true,false,false);fail_after=-1;
    int before=allocs;EpdRect dirty;
    assert(ui_quick_menu_draw_button(frame,2,false,true,&dirty));
    assert(ui_quick_menu_draw_button(frame,2,false,false,&dirty)&&allocs==before);
@@ -291,14 +327,19 @@ int main(int argc,char **argv){
   rotation=3;oom=false;fail_after=-1;
   FILE *in=fopen(argv[arg],"rb");assert(in);
   for(int y=0;y<1216;++y)for(int x=0;x<684;++x){int v=fgetc(in);assert(v>=0);epd_draw_pixel(x,y,v,frame);}fclose(in);
-  memcpy(again,frame,BYTES);ui_quick_menu_draw(frame,true,false);
+  memcpy(again,frame,BYTES);ui_quick_menu_draw(frame,true,false,false);
   for(int y=0;y<76;++y)for(int x=0;x<684;++x)epd_draw_pixel(x,y,pixel(again,x,y),frame);
   FILE *out=fopen(argv[arg+1],"wb");assert(out);fprintf(out,"P5\n684 1216\n255\n");
   for(int y=0;y<1216;++y)for(int x=0;x<684;++x)fputc(pixel(frame,x,y),out);fclose(out);
   ui_quick_menu_end();assert(!live&&!current_bytes);
  }
  ui_quick_menu_end();assert(!live&&!current_bytes);
- puts("PASS: actual liquid-glass quick layer bounds temporary PSRAM to 170856 bytes; 23328-byte control cache frees on close, 80 local press/release and status changes allocate nothing and exactly restore artwork; grayscale in all modes, four rotations, deterministic rendering and every allocation failure; 12 navigation presses preserve gray backgrounds/labels/marker/neighbors in all modes; click cache <=4096 bytes restores exact pixels, ignores prefetch and tolerates OOM; Han scaling retains native bits and smooths enlarged edges");
+ for(rotation=1;rotation<4;rotation+=2){
+  patterned();ui_quick_menu_draw(frame,true,false,true);
+  assert(ui_quick_menu_restore(frame)&&!memcmp(frame,saved,BYTES));
+  ui_quick_menu_end();assert(!live);
+ }
+ puts("PASS: actual liquid-glass quick layer bounds temporary PSRAM to 203688 bytes; 113616-byte top/control cache frees on close, 80 local press/release and status changes allocate nothing and exactly restore artwork; grayscale in all modes, four rotations, deterministic rendering and every allocation failure; 12 navigation presses preserve gray backgrounds/labels/marker/neighbors in all modes; click cache <=4096 bytes restores exact pixels, ignores prefetch and tolerates OOM; Han scaling retains native bits and smooths enlarged edges");
  return 0;
 }
 '''

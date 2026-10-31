@@ -14,6 +14,9 @@
 #include "app_config.h"
 #include "settings.h"
 #include "e0470_epaper_waveform.h"
+uint8_t app_settings_reader_turn_effect(void) {return 0;}
+bool display_reader_fast_text_prepare(EpdiyHighlevelState *hl,EpdRect area) {(void)hl;(void)area;assert(false);return false;}
+const EpdWaveform* display_reader_fast_text_waveform(void) {assert(false);return NULL;}
 app_main_refresh_mode_t app_settings_main_refresh_mode(void) {return APP_MAIN_REFRESH_NORMAL;}
 // 所有真实推屏和欠载恢复都必须持有 OTA 互斥锁，包括递归兜底。
 // Every physical scan and underrun recovery must hold OTA exclusion, including recursive fallback.
@@ -48,12 +51,10 @@ static const EpdWaveform soft_gray = {4};
 static const EpdWaveform reader_soft = {5};
 const EpdWaveform* display_reader_text_waveform(void) {return &reader_soft;}
 const EpdWaveform* display_reader_water_waveform(void) {return &reader_soft;}
-const EpdWaveform* display_main_clean_waveform_with_phases(const EpdWaveform* w,enum EpdDrawMode mode,unsigned phases){
-    assert(mode==MODE_DU||mode==MODE_GL16);assert(phases==6||phases==8);return w;
+// 本组隔离波形工厂；实际擦白LUT由pico_main_clean_host_test逐迁移覆盖。/ Isolate waveform factories here; pico_main_clean_host_test covers real whitening LUTs.
+const EpdWaveform* display_main_clean_waveform_with_phases(const EpdWaveform* wave,enum EpdDrawMode mode,unsigned white) {
+    assert(wave&&(mode==MODE_GL16||mode==MODE_DU)&&white>=6&&white<=8);return wave;
 }
-uint8_t app_settings_reader_turn_effect(void){return 0;}
-bool display_reader_fast_text_prepare(EpdiyHighlevelState *hl,EpdRect area){(void)hl;(void)area;assert(false);return false;}
-const EpdWaveform* display_reader_fast_text_waveform(void){assert(false);return &reader_soft;}
 const EpdWaveform* display_main_water_waveform(void) {return &soft_gray;}
 const EpdWaveform* display_main_normal_waveform(void) { return display_main_water_waveform(); }
 const EpdWaveform* display_main_ui_waveform(void) {return display_main_normal_waveform();}

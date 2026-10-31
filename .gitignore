@@ -121,6 +121,8 @@ Desktop.ini
 /flash/Pico-update.bin
 /flash/Pico-update-*.bin
 
-!flash/metalio/releases/*/bootloader.bin
-!flash/metalio/releases/*/partitions.bin
-!flash/metalio/releases/*/ota_data_initial.bin
+# Public website is maintained in read-pico-reader; this private repo carries firmware.
+/flash/
+/build-*/
+/sdkconfig.pico
+/sdkconfig.metalio47

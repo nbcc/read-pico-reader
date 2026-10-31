@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: LicenseRef-Kiikoread-Personal-Study-1.0
  * 中文：透明PNG书封直接叠加在当前画面上；保留原画布比例，不依赖阅读记录或额外整帧缓存。
  * English: Composite a transparent PNG cover over the current frame, preserving canvas ratio without reader history or an extra full-frame cache.
+ * S31用户修订：仅合成时将alpha250–255归为不透明，保留原始层与更低透明度。
+ * S31 user revision: snap alpha250–255 only during composition, retaining the source layer and lower opacity.
  * 用户2026-10-21修订：有界PSRAM行环合并阴影/图案读取，保留逐像素结果；低内存沿用原双遍，缓存完整校验先于底图修改。
  * User revision2026-10-21: a bounded PSRAM row ring fuses shadow/art reads with identical pixels; low memory retains two passes and cache validation precedes background edits.
  * 用户2026-10-24修订：缓存灰度/alpha字节对无损行压缩，FAT安全替换，继续完整校验后再叠加。
@@ -94,6 +96,18 @@ static uint8_t pixel(const uint8_t *fb,int x,int y) {
     }
     return (epd_get_pixel(px,py,epd_width(),epd_height(),fb)>>4)*17u;
 }
+
+#if KIIKO_BOARD_METALIO47
+// 将接近满值的透明度归为不透明，并还原预乘灰度，避免16灰抖动放大少量底图渗透。
+// Snap near-full alpha to opaque and unpremultiply gray so16-level dithering cannot amplify slight backdrop leakage.
+// 仅透明书封使用；alpha<250的真实半透明和原始缓存字节保持。
+// Apply only to transparent covers; retain true semitransparency below250 and original cached bytes.
+static unsigned seal_art_gray(unsigned gray,unsigned alpha,unsigned background) {
+    unsigned value=alpha>=250 ? (gray*255u+alpha/2u)/alpha :
+        gray+(background*(255u-alpha)+127u)/255u;
+    return value>255u?255u:value;
+}
+#endif
 
 // 缓存的是PNG层，不含阅读底图；逐行叠加到每次锁屏的真实当前页面。
 // Cache only the PNG layer, then stream it over the current page without retaining fonts/images twice.
@@ -317,7 +331,11 @@ static bool seal_draw_rows(FILE *f,uint8_t *fb,unsigned w,unsigned h,uint8_t *wo
             unsigned value=((*target>>shift)&15)*17u;
             if(sa)value=ui_image_dither_gray((value*(255-sa/5)+127)/255,xx,yy);
             if(a) {
+#if KIIKO_BOARD_METALIO47
+                value=seal_art_gray(art[x*2],a,value);
+#else
                 value=art[x*2]+(value*(255-a)+127)/255;
+#endif
                 if(value>255)value=255;
                 value=ui_image_dither_gray(value,xx,yy);
             }
@@ -352,7 +370,11 @@ static bool seal_draw(uint8_t *fb,const char *path,unsigned w,unsigned h,bool *s
                 int xx=ox+x+(pass?0:4),yy=oy+y+(pass?0:6);
                 if(xx>=684||yy>=1216)continue;
                 unsigned bg=pixel(fb,xx,yy);
+#if KIIKO_BOARD_METALIO47
+                unsigned value=pass?seal_art_gray(row[x*2],a,bg):(bg*(255-a/5)+127)/255;
+#else
                 unsigned value=pass?row[x*2]+(bg*(255-a)+127)/255:(bg*(255-a/5)+127)/255;
+#endif
                 if(value>255)value=255;
                 *started=true;
                 epd_draw_pixel(xx,yy,ui_image_dither_gray(value,xx,yy),fb);
@@ -393,7 +415,11 @@ bool book_lock_bookmark_draw(uint8_t *fb,const char *path) {
         for(unsigned y=0;y<h;++y)for(unsigned x=0;x<w;++x){
             size_t at=(size_t)y*w+x;unsigned a=alpha[at];if(!a)continue;
             int xx=ox+x,yy=oy+y;
+#if KIIKO_BOARD_METALIO47
+            unsigned value=seal_art_gray(layers[at],a,pixel(fb,xx,yy));
+#else
             unsigned value=layers[at]+(pixel(fb,xx,yy)*(255-a)+127)/255;
+#endif
             if(value>255)value=255;
             epd_draw_pixel(xx,yy,ui_image_dither_gray(value,xx,yy),fb);
         }

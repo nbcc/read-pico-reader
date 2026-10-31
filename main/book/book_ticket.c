@@ -64,7 +64,11 @@ static uint32_t local_day(void) {
 static void stats_load(ticket_stats_t *out) {
     memset(out, 0, sizeof(*out));
     nvs_handle_t h;
+#if KIIKO_BOARD_METALIO47
+    if (nvs_open("mt_ticket", NVS_READONLY, &h) != ESP_OK) return;
+#else
     if (nvs_open("rp_ticket", NVS_READONLY, &h) != ESP_OK) return;
+#endif
     size_t len = sizeof(*out);
     esp_err_t err = nvs_get_blob(h, "stats", out, &len);
     nvs_close(h);
@@ -80,7 +84,11 @@ esp_err_t book_ticket_record(uint32_t seconds, uint32_t turns) {
     stats.total_turns += turns;
     if (day) { stats.today_seconds += seconds; stats.today_turns += turns; }
     nvs_handle_t h;
+#if KIIKO_BOARD_METALIO47
+    esp_err_t err = nvs_open("mt_ticket", NVS_READWRITE, &h);
+#else
     esp_err_t err = nvs_open("rp_ticket", NVS_READWRITE, &h);
+#endif
     if (err != ESP_OK) return err;
     err = nvs_set_blob(h, "stats", &stats, sizeof(stats));
     if (err == ESP_OK && day && seconds) {
@@ -114,7 +122,11 @@ bool book_ticket_recent_days(uint32_t seconds[30]) {
     uint32_t today = local_day();
     if (!today) return false;
     nvs_handle_t h;
+#if KIIKO_BOARD_METALIO47
+    if (nvs_open("mt_ticket", NVS_READONLY, &h) != ESP_OK) return true;
+#else
     if (nvs_open("rp_ticket", NVS_READONLY, &h) != ESP_OK) return true;
+#endif
     ticket_heat_t heat = {0};
     size_t len = sizeof(heat);
     esp_err_t err = nvs_get_blob(h, "heatmap", &heat, &len);
@@ -136,7 +148,11 @@ bool book_ticket_month_days(int year, int month, uint32_t seconds[31]) {
     struct tm date = {0}; gmtime_r(&timestamp, &date);
     if (date.tm_year+1900 != year || date.tm_mon+1 != month) return false;
     nvs_handle_t h;
+#if KIIKO_BOARD_METALIO47
+    if (nvs_open("mt_ticket", NVS_READONLY, &h) != ESP_OK) return true;
+#else
     if (nvs_open("rp_ticket", NVS_READONLY, &h) != ESP_OK) return true;
+#endif
     ticket_month_t heat; month_load(h, &heat); nvs_close(h);
     uint32_t first = today-(date.tm_mday-1);
     for (int i=0; i<date.tm_mday; ++i) {
@@ -152,38 +168,44 @@ static void text_fit(char *text, int px, int width) {
         text[n] = 0;
     }
 }
-static uint8_t *cover_load(const char *path, const char *title, const char *author) {
+static uint8_t *cover_load(const char *path, const char *title, const char *author,
+                           unsigned *width, unsigned *height) {
     uint8_t *gray = heap_caps_malloc(BOOK_COVER_W * BOOK_COVER_H,
                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     // The lock screen must not decode a potentially large EPUB while the
     // power key is being handled; use the shelf's cover cache when available.
     // 处理电源键时只读书架封面缓存，不在锁屏路径解码大 EPUB。
-    if (gray && !book_cover_load_gray(path, title, author, gray, false, NULL)) {
-        free(gray);
-        gray = NULL;
+    if (!gray) return NULL;
+    // Natural/list covers retain the complete artwork. Older shelf caches may
+    // have been prepared before the author metadata became available.
+    for (unsigned pass = 0; pass < 2; ++pass) {
+        const char *cached_author = pass ? "" : author;
+        if (pass && (!author || !*author)) break;
+        if (book_cover_load_list_gray(path, title, cached_author, gray, false, NULL, width, height))
+            return gray;
     }
-    return gray;
+    for (unsigned pass = 0; pass < 2; ++pass) {
+        const char *cached_author = pass ? "" : author;
+        if (pass && (!author || !*author)) break;
+        if (book_cover_load_gray(path, title, cached_author, gray, false, NULL)) {
+            *width = BOOK_COVER_W; *height = BOOK_COVER_H;
+            return gray;
+        }
+    }
+    free(gray);
+    return NULL;
 }
-static void cover_background_draw(uint8_t *fb, const uint8_t *gray) {
+static void cover_background_draw(uint8_t *fb, const uint8_t *gray, unsigned width, unsigned height) {
     if (!gray) {
         ui_fill_rect_fast((EpdRect){0, 0, UI_LOCK_WIDTH, UI_LOCK_HEIGHT}, 0xb0, fb);
         return;
     }
-    int crop_x = 0, crop_y = 0, crop_w = BOOK_COVER_W, crop_h = BOOK_COVER_H;
-    if ((int64_t)BOOK_COVER_W * UI_LOCK_HEIGHT > (int64_t)BOOK_COVER_H * UI_LOCK_WIDTH) {
-        crop_w = BOOK_COVER_H * UI_LOCK_WIDTH / UI_LOCK_HEIGHT;
-        crop_x = (BOOK_COVER_W - crop_w) / 2;
-    } else {
-        crop_h = BOOK_COVER_W * UI_LOCK_HEIGHT / UI_LOCK_WIDTH;
-        crop_y = (BOOK_COVER_H - crop_h) / 2;
-    }
+    book_crop_t crop = book_cover_crop(width, height, UI_LOCK_WIDTH, UI_LOCK_HEIGHT);
     for (int y = 0; y < UI_LOCK_HEIGHT; ++y) {
-        const int sy = crop_y + y * crop_h / UI_LOCK_HEIGHT;
+        const int sy = crop.y + (uint64_t)y * crop.height / UI_LOCK_HEIGHT;
         for (int x = 0; x < UI_LOCK_WIDTH; ++x) {
-            const int sx = crop_x + x * crop_w / UI_LOCK_WIDTH;
-            const uint8_t tone = ui_contrast_gray(gray[sy * BOOK_COVER_W + sx]);
-            // 对比度输出已经是面板4bit灰阶；再次按255/15量化会把纯白变成灰点。
-            // Contrast already yields panel 4-bit levels; quantizing again by 255/15 would dither solid white into gray.
+            const int sx = crop.x + (uint64_t)x * crop.width / UI_LOCK_WIDTH;
+            const uint8_t tone = ui_contrast_gray(gray[sy * width + sx]);
             epd_draw_pixel(x, y, tone, fb);
         }
     }
@@ -216,19 +238,24 @@ static void ticket_shadow_draw(uint8_t *fb) {
         ui_fill_rect_fast((EpdRect){x + 5, y0, 1, y1 - y0}, 0x80, fb);
     }
 }
-static void cover_draw(uint8_t *fb, const uint8_t *gray, const char *title) {
+static void cover_draw(uint8_t *fb, const uint8_t *gray, unsigned width, unsigned height, const char *title) {
     EpdRect box = {216, 378, 252, 344};
-    ui_fill_rect_fast(box, UI_GRAY_LIGHT, fb);
     if (gray) {
+        // Fit the original aspect ratio instead of stretching a narrow book cover.
+        int w = box.width, h = (uint64_t)height * w / width;
+        if (h > box.height) { h = box.height; w = (uint64_t)width * h / height; }
+        box.x += (box.width - w) / 2; box.y += (box.height - h) / 2;
+        box.width = w; box.height = h;
         for (int y = 0; y < box.height; ++y)
             for (int x = 0; x < box.width; ++x) {
-                int sx = x * BOOK_COVER_W / box.width;
-                int sy = y * BOOK_COVER_H / box.height;
-                const uint8_t tone = ui_contrast_gray(gray[sy * BOOK_COVER_W + sx]);
+                int sx = x * width / box.width;
+                int sy = y * height / box.height;
+                const uint8_t tone = ui_contrast_gray(gray[sy * width + sx]);
                 epd_draw_pixel(box.x + x, box.y + y,
                                tone, fb);
             }
     } else {
+        ui_fill_rect_fast(box, UI_GRAY_LIGHT, fb);
         char short_title[96]; snprintf(short_title, sizeof(short_title), "%s", title);
         text_fit(short_title, 32, box.width - 20);
         ui_text_vc(fb, box.x + box.width / 2, box.y + box.height / 2, 32,
@@ -257,12 +284,61 @@ static void ticket_stat(uint8_t *fb, int y, int height, int px, const char *text
         ui_text_fixed(fb, 82, y, px, line, EPD_DRAW_ALIGN_LEFT, false);
     }
 }
-static void ticket_heading(uint8_t *fb,int top,int height,int px,char *text) {
-    // 锁屏入口已切系统字体；标题按原生轮廓输出，独立强制AA，测量与绘制用同一字库。
-    // Lock entry selects the system face; rasterize native outlines with explicit AA and measure using the same face.
-    px=ui_text_effective_px(px);if(px>height-2)px=height-2;
-    px=ui_text_title_fit(text,px,520,text);
-    ui_text_title_vc(fb,82,top+height/2,px,text,text,EPD_DRAW_ALIGN_LEFT);
+static size_t heading_prefix(const char *text, int px, const char *sample, char line[256]) {
+    size_t used = 0;
+    while (text[used]) {
+        size_t next = used + 1;
+        while (text[next] && ((unsigned char)text[next] & 0xc0) == 0x80) ++next;
+        if (next >= 256) break;
+        memcpy(line, text, next); line[next] = 0;
+        if (ui_text_title_width_px(px, line, sample) > 520) break;
+        used = next;
+    }
+    memcpy(line, text, used); line[used] = 0;
+    return used;
+}
+static int ticket_heading(uint8_t *fb,int top,int height,int px,const char *text) {
+    // Keep the source title intact for the cover and cache keys. Match the exact
+    // drawing face, shrink first, then use the reserved second title line.
+    const int single_height = height > 64 ? 64 : height;
+    px=ui_text_effective_px(px);if(px>single_height-2)px=single_height-2;
+    // Preserve native-size supplemental Han titles; imported outlines retain their preferred size.
+    px=ui_text_title_fit(NULL,px,520,text);
+    const int minimum = height >= 96 ? 28 : 18;
+    while(px>minimum && ui_text_title_width_px(px,text,text)>520)--px;
+    if(ui_text_title_width_px(px,text,text)<=520) {
+        ui_text_title_vc(fb,82,top+single_height/2,px,text,text,EPD_DRAW_ALIGN_LEFT);
+        return 1;
+    }
+    char first[256],last[256]; size_t split=0;
+    if(height>=96) {
+        for(;px>=18;--px) {
+            split=heading_prefix(text,px,text,first);
+            if(split && ui_text_title_width_px(px,text+split,text)<=520)break;
+        }
+        if(px<18)px=18;
+        split=heading_prefix(text,px,text,first);
+        snprintf(last,sizeof(last),"%s",text+split);
+    } else snprintf(last,sizeof(last),"%s",text);
+    // Extremely long names retain an explicit ellipsis rather than silently losing characters.
+    if(ui_text_title_width_px(px,last,text)>520) {
+        while(*last) {
+            size_t n=strlen(last)-1;
+            while(n && ((unsigned char)last[n]&0xc0)==0x80)--n;
+            last[n]=0;
+            char candidate[260];snprintf(candidate,sizeof(candidate),"%s…",last);
+            if(strlen(candidate)<sizeof(last) && ui_text_title_width_px(px,candidate,text)<=520) {
+                memcpy(last,candidate,strlen(candidate)+1);break;
+            }
+        }
+    }
+    if(height>=96) {
+        ui_text_title_vc(fb,82,top+height/4,px,first,text,EPD_DRAW_ALIGN_LEFT);
+        ui_text_title_vc(fb,82,top+height*3/4,px,last,text,EPD_DRAW_ALIGN_LEFT);
+        return 2;
+    }
+    ui_text_title_vc(fb,82,top+height/2,px,last,text,EPD_DRAW_ALIGN_LEFT);
+    return 1;
 }
 bool book_ticket_draw(uint8_t *fb, bool reader_background) {
     (void)reader_background;
@@ -275,6 +351,9 @@ bool book_ticket_draw(uint8_t *fb, bool reader_background) {
     bool progress_valid = file_valid && book_progress_load(path, st.st_size, &progress);
     char title[256] = {0}, author[128] = {0};
     if (!book_name_from_path(path,title,sizeof(title),author,sizeof(author))) snprintf(title, sizeof(title), "未命名");
+    char custom_title[256] = {0};
+    if (book_title_get(path, custom_title, sizeof(custom_title)) && custom_title[0])
+        snprintf(title, sizeof(title), "%s", custom_title);
     const char *ext = strrchr(path, '.');
     if (ext && !strcasecmp(ext, ".epub")) {
         char meta_title[256] = {0},meta_author[128]={0};
@@ -286,15 +365,16 @@ bool book_ticket_draw(uint8_t *fb, bool reader_background) {
     }
     ticket_stats_t stats; stats_load(&stats);
     uint32_t day = local_day();
-    uint8_t *gray = cover_load(path, title, author);
-    cover_background_draw(fb, gray);
+    unsigned cover_width=0,cover_height=0;
+    uint8_t *gray = cover_load(path, title, author, &cover_width, &cover_height);
+    cover_background_draw(fb, gray, cover_width, cover_height);
     ticket_shadow_draw(fb);
     ticket_paper_draw(fb);
     ui_text(fb, 82, 98, 28, "kiikoread  /  阅读票根", EPD_DRAW_ALIGN_LEFT, false);
     ui_hairline(fb, 156, 82, 520, UI_GRAY_BLACK);
-    ticket_heading(fb,202,64,50,title);
-    if (author[0]) ticket_heading(fb,274,44,28,author);
-    cover_draw(fb, gray, title);
+    int lines=ticket_heading(fb,202,112,50,title);
+    if (author[0]) ticket_heading(fb,lines>1?326:274,44,28,author);
+    cover_draw(fb, gray, cover_width, cover_height, title);
     free(gray);
     ui_hairline(fb, 768, 82, 520, UI_GRAY_BLACK);
     char line[96];

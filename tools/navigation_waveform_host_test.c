@@ -177,23 +177,23 @@ int main(void) {
     }
     assert(!memcmp(saved_bw,original_bw->luts,sizeof(saved_bw))&&!memcmp(saved_gray,gray_table->luts,sizeof(saved_gray)));
     puts("PASS: all256 UI pairs restore complete original soft grays including light cards; directional white erase/equal holds/vendor LUTs retained; optical validation pending");
-    // Keep every native changed-pixel action and insert eight white-only phases before settling.
+    // 设置滚动复用原八相灰阶跟随表：全256对只向目标推动，等灰保持，不退回阈值黑白。
+    // Settings scrolling reuses the eight-phase gray follow table: all256 pairs are directional, equal grays hold and targets are never thresholded.
     const EpdWaveform *scroll_wave=display_settings_scroll_waveform();
-    const EpdWaveformPhases *scroll=e0470_waveform_phases(scroll_wave,MODE_GL16);
-    assert(scroll&&scroll->phases==soft_ui->phases+8&&!scroll->phase_times);
-    assert(scroll_wave->temp_intervals==display_main_normal_waveform()->temp_intervals);
-    const int drive=soft_ui->phases-3;
-    unsigned added_white=0;
+    const EpdWaveformPhases *scroll=e0470_waveform_phases(scroll_wave,MODE_DU);
+    assert(scroll_wave==&E0470_FOLLOW_WAVEFORM&&scroll==short_table&&scroll->phases==8);
     for(int to=0;to<16;++to)for(int from=0;from<16;++from)for(int f=0;f<scroll->phases;++f) {
         int actual=e0470_phase_action(scroll,f,to,from);
-        int expected=from==to?0:f<drive?e0470_phase_action(soft_ui,f,to,from):
-            f<drive+8?(to==15?2:0):e0470_phase_action(soft_ui,f-8,to,from);
+        int delta=to>from?to-from:from-to;
+        int budget=to>from?8:7;
+        int pushes=(delta*budget+14)/15;
+        int expected=f<pushes?(to>from?2:1):0;
         assert(actual==expected);
-        if(f>=drive&&f<drive+8&&actual==2)++added_white;
-        if(f>=drive+8)assert(actual==0);
     }
-    assert(added_white==15*8&&display_settings_scroll_waveform()==scroll_wave);
+    assert(e0470_phase_action(scroll,0,7,8)==1);
+    assert(e0470_phase_action(scroll,1,7,8)==0);
+    assert(display_settings_scroll_waveform()==scroll_wave);
     assert(!memcmp(saved_bw,original_bw->luts,sizeof(saved_bw))&&!memcmp(saved_gray,gray_table->luts,sizeof(saved_gray)));
-    puts("PASS: settings scroll45 retains native white erasure and all AA gray transitions, adds eight changed-white pulses before three settle holds, equal grays/cache/vendor unchanged");
+    puts("PASS: settings scrolling uses the existing8-phase directional gray table; all256 pairs, AA target-dependent budgets/equal holds/no reversal, no extra allocation; other profiles unchanged, optical validation pending");
     return 0;
 }

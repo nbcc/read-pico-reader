@@ -30,12 +30,16 @@ enum EpdDrawError {EPD_DRAW_SUCCESS=0,EPD_DRAW_FAULT=1};
 #define ESP_LOGW(...) ((void)0)
 #define pdMS_TO_TICKS(x) (x)
 typedef struct {int x,y,width,height;} EpdRect;
-typedef struct {int unused;} EpdiyHighlevelState;
+typedef struct {uint8_t *back_fb;} EpdiyHighlevelState;
 typedef struct {bool mounted;} read_pico_sd_info_t;
 typedef struct {bool active;} app_lock_font_t;
 typedef void *sc7a20h_handle_t;typedef void *cst836u_handle_t;
 typedef int app_wake_source_t;
-static const uint8_t lock_4bpp_bin_start[1]={0};
+static EpdiyHighlevelState *s_lock_hint_hl,*s_boot_lock_hl;
+static struct{unsigned serial;}s_lock_hint;
+static bool s_boot_lock_active,s_boot_lock_known,s_boot_lock_draw;
+static unsigned read_pico_pmu_lock_key_serial(void){return 0;}
+static void lock_resume_service(void){}
 static uint8_t pixels[FRAME_BYTES],panel[FRAME_BYTES],style,current_background=0x32;
 static bool frame_ready, s_lock_feedback_visible, feedback_seen, final_ok=true;
 static unsigned full_presents, entry_clears;
@@ -58,25 +62,28 @@ static bool book_lock_collage_draw(uint8_t *fb){return draw(2,fb);}
 static bool book_lock_collage_prepare(uint8_t *fb){return draw(2,fb);}
 static enum EpdDrawError update_display_full(EpdiyHighlevelState *h){(void)h;++full_presents;assert(feedback_seen&&!s_lock_feedback_visible&&panel[0]==255&&panel[1]==0);if(!final_ok){panel[0]=0x77;return EPD_DRAW_FAULT;}memcpy(panel,pixels,FRAME_BYTES);++presents;return EPD_DRAW_SUCCESS;}
 static void book_lock_collage_cache_commit(const uint8_t *fb){assert(style==2&&draw_ok&&presents==1&&fb==pixels&&!memcmp(panel,pixels,FRAME_BYTES));}
-static void ui_draw_full_image(uint8_t *fb,const uint8_t *art){assert(art==lock_4bpp_bin_start&&panel[0]==(feedback_seen?255:0x32));++fallback;memset(fb,0xfe,FRAME_BYTES);frame_ready=true;}
+static void ui_lock_fallback_draw(uint8_t *fb){assert(panel[0]==(feedback_seen?255:0x32));++fallback;memset(fb,255,FRAME_BYTES);frame_ready=true;}
 static uint8_t *epd_hl_get_framebuffer(EpdiyHighlevelState *h){(void)h;return pixels;}
 static void epd_poweron(void){}
 static void epd_poweroff(void){}
 static void epd_clear(void){if(!presents){assert(frame_ready);++entry_clears;}memset(panel,255,FRAME_BYTES);}
 static void epd_hl_set_all_white(void *h){(void)h;memset(pixels,255,FRAME_BYTES);}
-static enum EpdDrawError epd_hl_update_screen_from_white(void *h,int mode,int temp){(void)h;assert(mode==MODE_GC16&&temp==25&&frame_ready&&panel[0]==255);assert(pixels[0]==(draw_ok?0x10+style:0xfe));memcpy(panel,pixels,FRAME_BYTES);++presents;return EPD_DRAW_SUCCESS;}
+static enum EpdDrawError epd_hl_update_screen_from_white(void *h,int mode,int temp){(void)h;assert(mode==MODE_GC16&&temp==25&&frame_ready&&panel[0]==255);assert(pixels[0]==(draw_ok?0x10+style:0xff));memcpy(panel,pixels,FRAME_BYTES);++presents;return EPD_DRAW_SUCCESS;}
 static void app_font_begin_lock(app_lock_font_t *s){assert(panel[0]==(feedback_seen?0xff:0x32));s->active=true;++font_begin;}
 static void app_font_end_lock(app_lock_font_t *s){assert(s->active);++font_end;}
 static bool read_pico_transfer_pause_for_sleep(void){++pause;return transfer_ok;}
 static void read_pico_transfer_resume_after_sleep(void){++resume;}
 static void pico_boot_clear_resume(void){++clear_resume;}
+static bool pico_boot_has_resume(void){return boot_cache;}
+static void pico_boot_ready(void){}
+static void pico_boot_hold_resume(void){}
 static void app_lock_wait_key_idle(int ms){assert(ms==800);}
-static app_wake_source_t app_light_sleep_wait_timed(void *acc,unsigned ms){assert(acc==(void*)1&&ms==600000);return timeout?APP_WAKE_TIMEOUT:APP_WAKE_KEY;}
+static app_wake_source_t app_light_sleep_wait_timed(void *acc,unsigned ms){assert(!acc&&ms==600000);return timeout?APP_WAKE_TIMEOUT:APP_WAKE_KEY;}
 static void app_enter_host_sleep(int mode){assert(mode==APP_SLEEP_DEEP);longjmp(deep,1);}
 static void read_pico_pmu_drain_events(void){}
 static int64_t esp_timer_get_time(void){return 2000000;}
 static bool lock_screen_restore(uint8_t *fb){if(!cache_ok||cached_style!=style)return false;memset(fb,0x10+style,FRAME_BYTES);return true;}
-static void lock_screen_authenticate(void *h,void *tp,void *acc,bool boot){(void)h;assert(tp==(void*)2&&acc==(void*)1);assert(pin);assert(boot==boot_cache);assert(pixels[0]==(draw_ok?0x10+style:0xfe));++auths;}
+static void lock_screen_authenticate(void *h,void *tp,void *acc,bool boot){(void)h;assert(tp==(void*)2&&acc==(void*)1);assert(pin);assert(boot==boot_cache);assert(pixels[0]==(draw_ok?0x10+style:0xff));++auths;}
 static int read_pico_sd_get_info(read_pico_sd_info_t *i){i->mounted=true;return 0;}
 static void vTaskDelay(int ms){(void)ms;}
 static int epd_width(void){return 684;}
@@ -87,7 +94,7 @@ for name in ('draw_wallpaper', 'enter_lock_and_sleep', 'app_lock_boot_gate'):
 unit += r'''
 static void reset(void){current_background=0x32;memset(draws,0,sizeof(draws));fallback=presents=auths=font_begin=font_end=pause=resume=clear_resume=0;memset(pixels,0x32,FRAME_BYTES);memset(panel,0x32,FRAME_BYTES);frame_ready=s_lock_feedback_visible=feedback_seen=false;full_presents=entry_clears=0;final_ok=true;draw_ok=transfer_ok=true;timeout=reader=boot_cache=cache_ok=false;}
 int main(void){
- EpdiyHighlevelState hl={0};int64_t ignore=0;
+ EpdiyHighlevelState hl={panel};int64_t ignore=0;
  // 两种来源的阅读背景只影响票根内容，不决定样式。/ Reader provenance affects ticket content, never the style.
  for(unsigned s=0;s<4;++s)for(unsigned password=0;password<2;++password)for(unsigned body=0;body<2;++body){
   reset();style=s;pin=password;reader=body;
@@ -119,7 +126,7 @@ int main(void){
  puts("PASS: real single-pass final collage retains white/badge history, avoids duplicate entry clear, recovers final faults and consumes feedback before cache/PIN; auto/manual lock entry chooses ticket/wallpaper/collage with/without PIN and reader background; upload deferral; deep timeout; cold gate cache/fault fallback keeps selected style");
 }
 '''
-with tempfile.TemporaryDirectory(dir=ROOT/'build') as folder:
+with tempfile.TemporaryDirectory() as folder:
     c, exe = Path(folder)/'test.c', Path(folder)/'test'
     c.write_text(unit)
     subprocess.run(['cc','-std=gnu11','-Wall','-Wextra','-Werror','-fsanitize=address,undefined',str(c),'-o',str(exe)],check=True)

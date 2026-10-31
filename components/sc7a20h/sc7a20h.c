@@ -11,6 +11,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include "kiiko_board.h"
 
 #include "driver/gpio.h"
 #include "driver/rtc_io.h"
@@ -235,6 +236,41 @@ esp_err_t sc7a20h_power_up(sc7a20h_handle_t h) {
     if (h == NULL) return ESP_ERR_INVALID_STATE;
     return sc7a20h_apply_config(h, &h->cfg);
 }
+// S31共享中断脚只轮询，Pico保留自身路径。/ Poll S31 shared IRQ; Pico retains its own path.
+#if KIIKO_BOARD_METALIO47
+
+esp_err_t sc7a20h_shared_irq_polling(sc7a20h_handle_t h) {
+    if (h == NULL || h->dev == NULL) return ESP_ERR_INVALID_STATE;
+    // 原厂Sc7a20h::DisableInterrupts：CTRL3=0、AOI1_CFG=0、CTRL5=0、CTRL6=3。
+    // Reference DisableInterrupts releases GPIO2 without driving the shared line high.
+    const uint8_t regs[]={SC7A20H_REG_CTRL3,SC7A20H_REG_AOI1_CFG,SC7A20H_REG_CTRL5,SC7A20H_REG_CTRL6};
+    const uint8_t values[]={0,0,0,3};
+    for (unsigned i=0;i<sizeof(regs);i++) {
+        esp_err_t err=write_reg(h,regs[i],values[i]);
+        if (err!=ESP_OK) return err;
+    }
+    uint8_t value;
+    esp_err_t err=read_regs(h,SC7A20H_REG_AOI1_SRC,&value,1);
+    if (err!=ESP_OK) return err;
+    for (unsigned i=0;i<sizeof(regs);i++) {
+        err=read_regs(h,regs[i],&value,1);
+        if (err!=ESP_OK) return err;
+        if (value!=values[i]) return ESP_ERR_INVALID_RESPONSE;
+    }
+    h->ctrl3=h->ctrl5=0;h->fifo_8bit=false;
+    return ESP_OK;
+}
+
+esp_err_t sc7a20h_shared_irq_idle(sc7a20h_handle_t h) {
+    esp_err_t err=sc7a20h_shared_irq_polling(h);
+    if (err!=ESP_OK) return err;
+    // 原厂WriteSilenceRegs保持ODR、关闭XYZ；避免PD钳住共享IRQ。
+    // Reference WriteSilenceRegs keeps ODR with XYZ off to avoid clamping the IRQ in PD.
+    err=write_reg(h,SC7A20H_REG_CTRL1,0x10);
+    if (err==ESP_OK) h->powered=false;
+    return err;
+}
+#endif
 
 bool sc7a20h_powered(sc7a20h_handle_t h) {
     return h != NULL && h->powered;

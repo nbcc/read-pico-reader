@@ -26,16 +26,7 @@ typedef struct { bool touched; uint8_t count; uint16_t x,y; } cst836u_touch_t;
 typedef struct { uint8_t* fb; void* hl; bool consumed,released; int64_t now_ms; const cst836u_touch_t* touch; const struct app_desc* request_app; bool request_return; } app_ctx_t;
 typedef enum { UI_GESTURE_PRESS, UI_GESTURE_TAP, UI_GESTURE_CANCEL, UI_GESTURE_LONG_PRESS } ui_gesture_type_t;
 typedef struct { ui_gesture_type_t type; uint16_t x,y,x0,y0; } ui_gesture_event_t;
-typedef struct app_desc { const char *title,*detail; bool enter_full,owns_keys;
-    bool binary_ui,persistent_navigation;
-    bool(*navigation_enabled)(app_ctx_t*);
-    bool(*menu_handle_enabled)(app_ctx_t*);
-    bool(*edge_back_enabled)(app_ctx_t*);
-    bool(*back_swipe_area)(app_ctx_t*,const ui_gesture_event_t*);
-    void(*on_enter)(app_ctx_t*); void(*on_exit)(app_ctx_t*); void(*on_media_lost)(app_ctx_t*);
-    void(*render)(app_ctx_t*,uint8_t*); bool(*present)(app_ctx_t*,app_redraw_t);
-    app_redraw_t(*on_tick)(app_ctx_t*); app_redraw_t(*on_gesture)(app_ctx_t*,const ui_gesture_event_t*);
-    app_redraw_t(*on_key)(app_ctx_t*,int); } app_desc_t;
+typedef struct app_desc { const char *title,*detail; bool enter_full,owns_keys,binary_ui,persistent_navigation;bool(*navigation_enabled)(app_ctx_t*);bool(*edge_back_enabled)(app_ctx_t*);bool(*back_swipe_area)(app_ctx_t*,const ui_gesture_event_t*); bool(*menu_handle_enabled)(app_ctx_t*); void(*on_enter)(app_ctx_t*); void(*on_exit)(app_ctx_t*); void(*on_media_lost)(app_ctx_t*); void(*render)(app_ctx_t*,uint8_t*); bool(*present)(app_ctx_t*,app_redraw_t); app_redraw_t(*on_tick)(app_ctx_t*); app_redraw_t(*on_gesture)(app_ctx_t*,const ui_gesture_event_t*); app_redraw_t(*on_key)(app_ctx_t*,int); } app_desc_t;
 enum EpdDrawMode { MODE_DU,MODE_GL16,MODE_GC16 };
 #define UI_MARGIN 40
 #define UI_CONTENT_TOP 176
@@ -49,7 +40,7 @@ enum EpdDrawMode { MODE_DU,MODE_GL16,MODE_GC16 };
 #define UI_PAD 16
 #define UI_GAP 12
 #define UI_BAR_TOP 1096
-#define UI_NAV_REFRESH_END 1096
+#define UI_NAV_REFRESH_END 1088
 #define UI_LOCK_HEIGHT 1216
 #define UI_LOCK_WIDTH 684
 #define EPD_DRAW_ALIGN_LEFT 0
@@ -64,6 +55,8 @@ enum EpdDrawMode { MODE_DU,MODE_GL16,MODE_GC16 };
 static inline void* heap_caps_malloc(size_t n,int caps){(void)caps;return malloc(n);}
 static const int E0470_WAVEFORM = 0;
 static const int E0470_FOLLOW_WAVEFORM = 1;
+static const int test_bw_waveform = 2;
+static inline const int* display_main_bw_waveform(void) { return &test_bw_waveform; }
 #define ESP_LOGI(tag,...) ((void)(tag))
 #define ESP_LOGW(tag,...) ((void)(tag))
 static inline const char* esp_err_to_name(int e) { (void)e; return "error"; }
@@ -72,9 +65,10 @@ static inline EpdRect ui_row_rect(int i,int n,int y,int h) { int w=(604-(n-1)*12
 static inline EpdRect ui_bar_rect(int i,int n) { int w=(508-(n-1)*12)/n; return (EpdRect){40+i*(w+12),1096,w,96}; }
 static inline bool ui_rect_hit(EpdRect r,int x,int y) { return x>=r.x&&y>=r.y&&x<r.x+r.width&&y<r.y+r.height; }
 static inline EpdRect ui_rect_union(EpdRect a,EpdRect b) { int x=a.x<b.x?a.x:b.x,y=a.y<b.y?a.y:b.y; int x2=a.x+a.width>b.x+b.width?a.x+a.width:b.x+b.width; int y2=a.y+a.height>b.y+b.height?a.y+a.height:b.y+b.height; return(EpdRect){x,y,x2-x,y2-y}; }
+static inline void ui_fill_rect_fast(EpdRect r,uint8_t gray,uint8_t*f){(void)r;(void)gray;(void)f;}
+static inline void display_monochrome_content(uint8_t*f){(void)f;}
 static inline void ui_clear_page(uint8_t* f) {(void)f;}
 static inline void ui_clear_rect_fast(uint8_t* f,EpdRect r) {(void)f;(void)r;}
-static inline void ui_fill_rect_fast(EpdRect r,int color,uint8_t* f) {(void)r;(void)color;(void)f;}
 static inline void ui_draw_header(uint8_t* f,...) {(void)f;}
 static inline void ui_draw_button(uint8_t* f,...) {(void)f;}
 static inline void ui_draw_icon(uint8_t* f,...) {(void)f;}
@@ -96,7 +90,14 @@ static inline void epd_draw_circle(int x,int y,int radius,...) {(void)x;(void)y;
 static inline void epd_draw_line(int x0,int y0,int x1,int y1,...) {(void)x0;(void)y0;(void)x1;(void)y1;}
 static inline int ttf_text_width_px(int px,const char* s) {return (int)strlen(s)*px/2;}
 static inline void display_set_bulk_io(bool b) {(void)b;}
-static inline int update_display_area_diff_with(void* p,...) {(void)p;return 0;}
+static int test_display_calls, test_display_error;
+static EpdRect test_display_area;
+static const int* test_display_wave;
+static enum EpdDrawMode test_display_mode;
+static inline int update_display_area_diff_with(void* p,const int* wave,enum EpdDrawMode mode,EpdRect area) {
+    (void)p; ++test_display_calls; test_display_wave=wave;
+    test_display_mode=mode; test_display_area=area; return test_display_error;
+}
 static inline int update_display_area_full_with(void* p,...) {(void)p;return 0;}
 static inline int update_display_area_with(void* p,...) {(void)p;return 0;}
 static inline int update_display_white(void* p) {(void)p;return 0;}

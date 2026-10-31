@@ -20,7 +20,7 @@ static void decode_durable(void) {
     }
 }
 esp_err_t nvs_open(const char *ns, int mode, nvs_handle_t *h) {
-    assert(!strcmp(ns, "pico_startup") && mode == NVS_READWRITE);
+    assert(!strcmp(ns, KIIKO_BOARD_STARTUP_NAMESPACE) && mode == NVS_READWRITE);
     *h=1;staged_present=present;staged_size=durable_size;
     memcpy(staged_raw,durable_raw,durable_size);
     return fail_open ? ESP_FAIL : ESP_OK;
@@ -55,6 +55,18 @@ static void seed_legacy(boot_record_t record) {
 int main(void) {
     pico_resume_t resume = {.tab=1, .reader=1, .fullscreen=1, .path="/sdcard/books/deep.epub"}, out;
     char interrupted[PICO_BOOT_PATH_MAX];
+#if KIIKO_BOARD_METALIO47
+    // 解锁前连续重启不能抹掉锁定意图，异常启动仍禁止自动开书/导入字体。
+    // Consecutive boots before unlock must retain the lock while abnormal startup still forbids automatic book/font resume.
+    pico_boot_init(false);pico_boot_ready();assert(pico_boot_save_resume(&resume)==ESP_OK);
+    pico_boot_init(false);assert(pico_boot_lock_pending()&&durable.resume_valid);
+    for(unsigned cycle=0;cycle<3;++cycle){
+        pico_boot_init(true);
+        assert(pico_boot_lock_pending()&&durable.resume_valid&&pico_boot_recovery()&&!pico_boot_has_resume());
+    }
+    pico_boot_ready();pico_boot_clear_resume();
+    assert(!pico_boot_lock_pending()&&!durable.resume_valid);
+#endif
     pico_boot_init(false); assert(!pico_boot_recovery() && !pico_boot_take_resume(&out) && !s_recovery_reasons);
     pico_boot_ready();
     assert(pico_boot_save_resume(&resume) == ESP_OK);
@@ -69,8 +81,9 @@ int main(void) {
     pico_boot_ready(); pico_boot_init(false); assert(!pico_boot_recovery()); pico_boot_ready();
     // 密码取消/深睡再次开机不能丢失恢复，但实际开书前必须消费。
     // PIN cancellation and another deep boot retain resume; actual opening still consumes it.
-    assert(pico_boot_save_resume(&resume) == ESP_OK); pico_boot_init(false); pico_boot_ready();
-    pico_boot_hold_resume(); assert(durable.resume_valid);
+    assert(pico_boot_save_resume(&resume) == ESP_OK);
+    assert(pico_boot_mark_frame_cached()==ESP_OK); pico_boot_init(false); pico_boot_ready();
+    pico_boot_hold_resume(); assert(durable.resume_valid && durable.reserved[0]);
     pico_boot_init(false); assert(!pico_boot_recovery()); pico_boot_ready(); pico_boot_hold_resume();
     assert(pico_boot_take_resume(&out) && !strcmp(out.path, resume.path) && !durable.resume_valid);
     assert(pico_boot_save_resume(&resume) == ESP_OK); pico_boot_init(false); pico_boot_ready(); pico_boot_hold_resume();
@@ -84,8 +97,9 @@ int main(void) {
     assert(!pico_boot_recovery() && !pico_boot_asset_allowed("/sdcard/books/large.epub") && pico_boot_asset_allowed(resume.path));
     // 密码取消/深睡再次开机不能丢失恢复，但实际开书前必须消费。
     // PIN cancellation and another deep boot retain resume; actual opening still consumes it.
-    assert(pico_boot_save_resume(&resume) == ESP_OK); pico_boot_init(false); pico_boot_ready();
-    pico_boot_hold_resume(); assert(durable.resume_valid);
+    assert(pico_boot_save_resume(&resume) == ESP_OK);
+    assert(pico_boot_mark_frame_cached()==ESP_OK); pico_boot_init(false); pico_boot_ready();
+    pico_boot_hold_resume(); assert(durable.resume_valid && durable.reserved[0]);
     pico_boot_init(false); assert(!pico_boot_recovery()); pico_boot_ready(); pico_boot_hold_resume();
     assert(pico_boot_take_resume(&out) && !strcmp(out.path, resume.path) && !durable.resume_valid);
     assert(pico_boot_save_resume(&resume) == ESP_OK); pico_boot_init(false); pico_boot_ready(); pico_boot_hold_resume();
@@ -96,6 +110,12 @@ int main(void) {
     pico_boot_init(false); assert(!pico_boot_take_resume(&out)); pico_boot_ready();
     assert(pico_boot_save_resume(&resume) == ESP_OK); pico_boot_init(true);
     assert(pico_boot_recovery() && !pico_boot_take_resume(&out) && !pico_boot_interrupted_book(interrupted, sizeof(interrupted)));
+    assert(s_recovery_reasons==BOOT_RECOVERY_RESET);
+#if KIIKO_BOARD_METALIO47
+    // WDT保护禁用字体/开书，但不能顺便取消锁屏。/ Watchdog recovery blocks fonts/books without clearing the lock gate.
+    assert(pico_boot_lock_pending() && !pico_boot_has_resume());
+    pico_boot_clear_resume();assert(!pico_boot_lock_pending());
+#endif
     pico_boot_ready();
     resume.path[0]=0; assert(pico_boot_save_resume(&resume)==ESP_ERR_INVALID_ARG);
     strcpy(resume.path, "/sdcard/../danger.epub"); assert(pico_boot_save_resume(&resume)==ESP_ERR_INVALID_ARG);
@@ -103,18 +123,35 @@ int main(void) {
     assert(pico_boot_book_begin("/other/book.epub")==ESP_ERR_INVALID_ARG);
     durable_raw[durable_size-1] ^= 1;
     pico_boot_init(false); assert(pico_boot_recovery()); pico_boot_ready();
+    assert(s_recovery_reasons==BOOT_RECOVERY_RECORD);
+#if KIIKO_BOARD_METALIO47
+    assert(!pico_boot_lock_pending());
+#endif
     fail_commit=true;
     assert(pico_boot_book_begin("/sdcard/book.epub")==ESP_FAIL);
     pico_boot_init(false); assert(pico_boot_recovery() && !pico_boot_take_resume(&out));
+    assert(s_recovery_reasons==BOOT_RECOVERY_STORE);
     fail_commit=false; fail_open=true;
     pico_boot_init(false); assert(pico_boot_recovery() && pico_boot_book_begin("/sdcard/book.epub")!=ESP_OK);
+    assert(s_recovery_reasons==(BOOT_RECOVERY_RECORD|BOOT_RECOVERY_STORE));
     fail_open=false;
     assert(commits > 0);
     present=false;memset(&durable,0,sizeof(durable));pico_boot_init(false);pico_boot_ready();
     strcpy(resume.path,"/sdcard/books/deep.epub");
     assert(pico_boot_save_resume(&resume)==ESP_OK&&pico_boot_mark_frame_cached()==ESP_OK);
     pico_boot_init(false);assert(pico_boot_has_resume()&&pico_boot_resume_frame_cached());
+#if KIIKO_BOARD_METALIO47
+    assert(durable.reserved[0]==1&&durable.resume_valid&&pico_boot_lock_pending());
+#else
     assert(durable.reserved[0]==0&&!durable.resume_valid);
+#endif
+    // 多次等待/深睡都保留真实锁图标记，但新开书前仍消费一次性入口。
+    // Repeated locked boots retain the actual-art marker while book admission remains one-shot.
+    for(unsigned cycle=0;cycle<4;++cycle){
+        pico_boot_ready();pico_boot_hold_resume();
+        assert(durable.resume_valid&&durable.reserved[0]==1);
+        pico_boot_init(false);assert(pico_boot_has_resume()&&pico_boot_resume_frame_cached());
+    }
     assert(pico_boot_take_resume(&out)&&!pico_boot_resume_frame_cached());pico_boot_ready();
     assert(pico_boot_save_resume(&resume)==ESP_OK);fail_commit=true;
     assert(pico_boot_mark_frame_cached()==ESP_FAIL);fail_commit=false;

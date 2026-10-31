@@ -44,6 +44,15 @@ extern "C" {
 #define E0470_FULL_GL16_FRAMES 48
 extern const EpdWaveform E0470_FULL_WAVEFORM;
 
+#if KIIKO_BOARD_METALIO47
+/// 本地S31实验的原始14相DU；未启用时返回NULL，不修改参考表。/ Raw local S31 DU14; NULL when disabled, without modifying reference tables.
+const EpdWaveform* e0470_du14_waveform(void);
+
+/// 旧 API 兼容名；S31 本地版沿用参考表，不启用 Pico 的 8 灰阶表。
+/// Legacy compatibility name: S31 uses the reference tables without Pico 8-gray calibration.
+#define E0470_GRAY8_GC16_FRAMES 48
+#define E0470_GRAY8_GL16_FRAMES 48
+#else
 /// 另一份表：只有 8 级可分辨灰阶（净推动梯子 8 档），30 相，整屏约 360ms（默认表约 430ms）。
 /// 灰阶档数 = 白推动梯子的档数，在这块屏上 16 级与 30 相不可兼得，所以它是备选不是默认。
 /// / Alternate table: 8 distinguishable grays (8-step net push), 30 phases,
@@ -51,24 +60,49 @@ extern const EpdWaveform E0470_FULL_WAVEFORM;
 /// levels and 30 phases cannot both fit this panel, so this is optional.
 #define E0470_GRAY8_GC16_FRAMES 30
 #define E0470_GRAY8_GL16_FRAMES 30
+#endif
 extern const EpdWaveform E0470_GRAY8_WAVEFORM;
 
+#if KIIKO_BOARD_METALIO47
+/// 用户授权采用 Metalio b400605 官方裁剪；原始 48 相表仍完整保留。
+/// User-authorized Metalio b400605 trim; the original 48-phase tables remain intact.
+/// 厂家 2.0.76 起默认关闭裁剪；置 1 才在开机裁成 GC36/GL37。
+/// Vendor 2.0.76 turns this off by default; set 1 for the trimmed page tables.
+#define E0470_WAVEFORM_TRIM 0
+#else
 /// 裁剪版保留新屏所需的 3 个尾部保持相。完整48相实测未明显改善边缘残影，因此恢复
 /// 已验证的主动段裁剪，避免无收益地增加约150ms；无损前导保持跳过仍由渲染器执行。
 /// / Trim keeps the 3 trailing hold phases the new panel needs. The full 48
 /// did not clearly help edge ghosting, so the proven active-segment trim is
 /// restored instead of adding ~150 ms for no gain. Lossless leading-hold
 /// skip is still done by the renderer.
+#endif
 #define E0470_TRIM_ERASE_MAX 11
 #define E0470_TRIM_SAT_CUT 5
 #define E0470_TRIM_WHITE_SAT_CUT 0
 #define E0470_TRIM_HOLD 3
+#if KIIKO_BOARD_METALIO47
+#if E0470_WAVEFORM_TRIM
 #define E0470_GC16_FRAMES 36
 #define E0470_GL16_FRAMES 37
+#else
+#define E0470_GC16_FRAMES E0470_FULL_GC16_FRAMES
+#define E0470_GL16_FRAMES E0470_FULL_GL16_FRAMES
+#endif
+#else
+#define E0470_GC16_FRAMES 36
+#define E0470_GL16_FRAMES 37
+#endif
 
+#if KIIKO_BOARD_METALIO47
+/// S31驱动相周期下限12ms；实际仍按完整面板扫描时长。
+/// S31 minimum phase12ms; actual cadence includes the full physical scan.
+#define E0470_WAVEFORM_FRAME_US 12000
+#else
 /// 帧周期取算法文档第 8 节的设计点 ν≈90Hz。
 /// / Frame period is the §8 design point ν≈90 Hz.
 #define E0470_WAVEFORM_FRAME_US 11090
+#endif
 extern const EpdWaveform E0470_WAVEFORM;
 
 /// CrossMux/FreeInk 普通文字翻页 GL16；仅配合真实 4bpp 历史帧差分使用，定期 GC16 保留。
@@ -100,6 +134,22 @@ const EpdWaveformPhases* e0470_waveform_phases(const EpdWaveform* waveform, int 
 /// / 2-bit action for (from→to) at `phase`: 0 hold, 1 darken, 2 erase.
 int e0470_phase_action(const EpdWaveformPhases* phases, int phase, int to, int from);
 
+#if KIIKO_BOARD_METALIO47
+/// 给"白→白"等值迁移补一相擦白（不增加相数），全像素推屏时白底才会被重新驱动；
+/// 否则白底只靠电荷保持，强光照射后逐渐变灰。返回补入的相序号，-1 表示没找到白相。
+/// / Add one erase pulse to the unchanged-white transition without adding phases, so a
+/// full-pixel pass re-drives the white background instead of only holding it; otherwise
+/// strong light greys it out. Returns the phase index written, or -1 when none was found.
+int e0470_waveform_white_tick(uint8_t (*data)[16][4], int frames);
+
+/// 在表尾再补 extra 帧擦白（只写 15→15 这一格，不增加相数），把白像素充得更深，
+/// 强光下更不容易漏灰。返回实际补入的帧数。
+/// / Add `extra` tail erase pulses on the unchanged-white cell only, without adding
+/// phases, so white pixels hold deeper charge and grey out later under strong light.
+int e0470_waveform_white_boost(uint8_t (*data)[16][4], int frames, int extra);
+
+#else
+#endif
 /// 生成 E0470_WAVEFORM 与 E0470_FOLLOW_WAVEFORM 的表。必须在第一次刷新之前调用一次。
 /// / Build E0470_WAVEFORM and E0470_FOLLOW_WAVEFORM. Call once before the first refresh.
 void e0470_waveform_init(void);

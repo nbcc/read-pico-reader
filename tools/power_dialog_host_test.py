@@ -4,18 +4,14 @@ SPDX-License-Identifier: Apache-2.0
 """
 from pathlib import Path
 import re, subprocess, sys, tempfile
+from home_cover_cache_host_test import function as source_function
 ROOT=Path(__file__).resolve().parents[1]
 power=(ROOT/'main/ui/ui_power_dialog.c').read_text()
 if len(sys.argv)>2 and sys.argv[1]=='--input-c':
     Path(sys.argv[2]).write_text(power[:power.index('EpdRect ui_power_dialog_rect(void)')].replace('#include "ui_glass.h"\n','').replace('#include "esp_heap_caps.h"\n',''))
     raise SystemExit(0)
 def function(path,name):
-    text=(ROOT/path).read_text()
-    m=re.search(r'^(?:static )?[^\n]+\b'+name+r'\([^;{}]*\)\s*\{',text,re.M)
-    assert m,name
-    at=m.end();depth=1
-    while depth:depth+=(text[at]=='{')-(text[at]=='}');at+=1
-    return text[m.start():at]+'\n'
+    return source_function(name,ROOT/path)+'\n'
 code=r'''
 #include <assert.h>
 #include <stdio.h>
@@ -25,6 +21,7 @@ code=r'''
 #include <limits.h>
 #include "ui_power_dialog.h"
 #include "ui_kit.h"
+#include "ui_image_dither.h"
 #define W 684
 #define H 1216
 static uint8_t fb[W*H/2],before[sizeof(fb)];
@@ -132,7 +129,17 @@ int main(int argc,char **argv){
  // Preserve page art, keep repeated feedback stable, free on close, and tolerate allocation failure.
  for(int y=0;y<H;++y)for(int x=0;x<W;++x)epd_draw_pixel(x,y,(uint8_t)(((x/13+y/19)%16)*16),fb);
  memcpy(before,fb,sizeof(fb));ui_power_dialog_reset(&dialog,false);ui_power_dialog_draw(fb,&dialog);
- assert(epd_get_pixel(10,10,W,H,fb)==epd_get_pixel(10,10,W,H,before));
+ // Opening must not blur or tint any pixel outside the slider and two button shapes.
+ for(int y=0;y<H;y++)for(int x=0;x<W;x++){
+  bool inside=false;
+  for(int slot=0;slot<3;slot++){
+   EpdRect r=slot?power_button_rect(slot):power_track_rect();
+   int radius=slot?UI_POWER_BUTTON_R:UI_POWER_TRACK_H/2;
+   if(x>=r.x&&y>=r.y&&x<r.x+r.width&&y<r.y+r.height&&
+      panel_sdf(x-r.x+.5f,y-r.y+.5f,r.width,r.height,radius)<=0)inside=true;
+  }
+  if(!inside)assert(ui_read_pixel(fb,x,y)==ui_read_pixel(before,x,y));
+ }
  for(int repeat=0;repeat<20;++repeat){
   assert(feed(UI_POWER_RESTART_X,UI_POWER_BUTTON_Y,1,true,false)==UI_POWER_ACTION_NONE);raster_check();
   assert(feed(0,UI_POWER_BUTTON_Y,1,false,false)==UI_POWER_ACTION_NONE);raster_check();
@@ -143,7 +150,7 @@ int main(int argc,char **argv){
  assert(feed(UI_POWER_CANCEL_X,UI_POWER_BUTTON_Y,1,true,false)==UI_POWER_ACTION_NONE);
  assert(feed(UI_POWER_CANCEL_X,UI_POWER_BUTTON_Y,0,false,true)==UI_POWER_ACTION_CANCEL);
  ui_power_dialog_end();fail_after=-1;
- puts("PASS: liquid-glass power capture/release, every-pixel drags, cached local raster, allocation/text-free input, repeated feedback, close cleanup and OOM controls");
+ puts("PASS: liquid-glass power leaves all pixels outside control shapes unchanged,capture/release, every-pixel drags, cached local raster, allocation/text-free input, repeated feedback, close cleanup and OOM controls");
  if(argc>1){
  FILE *source=argc>2?fopen(argv[2],"rb"):NULL;
  if(source){for(int y=0;y<H;++y)for(int x=0;x<W;++x){int value=fgetc(source);assert(value>=0);epd_draw_pixel(x,y,value,fb);}fclose(source);}
@@ -156,7 +163,7 @@ int main(int argc,char **argv){
 
 }
 '''
-with tempfile.TemporaryDirectory(prefix='kiikoread-power-',dir='/private/tmp') as folder:
+with tempfile.TemporaryDirectory(prefix='kiikoread-power-') as folder:
     c,binary=Path(folder)/'test.c',Path(folder)/'test';c.write_text(code)
     subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-g','-fsanitize=address,undefined',
         '-I'+str(ROOT/'tools/ui_gesture_stubs'),'-I'+str(ROOT/'main/ui'),str(c),'-lm','-o',str(binary)],check=True)

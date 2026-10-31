@@ -186,8 +186,16 @@ int ui_menu_hit_test(uint16_t x, uint16_t y, int leaf) {
 // Split by UI_KEY_PITCH so the three key centers (80/240/400) sit at mid-segment;
 // a slight finger miss still lands in the same segment.
 int ui_key_hit_test(uint16_t x, uint16_t y) {
+#if KIIKO_BOARD_METALIO47
+    if (y < 1570 || y > 1630) return -1;
+    if (x >= 170 && x <= 230) return UI_KEY_1;
+    if (x >= 70 && x <= 130) return UI_KEY_2;
+    if (x >= 270 && x <= 330) return UI_KEY_3;
+    return -1;
+#else
     if (y < UI_KEY_AREA_TOP) return -1;
     int index = (int)x / UI_KEY_PITCH;
     if (index >= UI_KEY_COUNT) return -1;
     return index;
+#endif
 }

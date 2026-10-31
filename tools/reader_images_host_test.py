@@ -59,20 +59,6 @@ static uint32_t s_page_images_generation;
 static size_t s_page,s_chapter=3,s_image_count;
 static char **s_images;
 static bool hidden,locked;
-// 本套只测未缩放插图；意外进入缩放绘制会直接失败。
-// This suite covers unzoomed illustration paths and rejects accidental zoom rendering.
-#define READER_IMAGE_ZOOM_MIN 1000
-static int s_image_zoom=READER_IMAGE_ZOOM_MIN,s_image_zoom_cx,s_image_zoom_cy,s_zoom_slot=-1;
-static int s_image_zoom_start_distance;
-static size_t s_image_zoom_page=SIZE_MAX,s_zoom_bits_bytes;
-static bool s_image_zoom_bw,s_image_pan_active,s_zoom_active;
-static uint8_t *s_zoom_bits;
-static struct {bool pending;} s_reader_tap;
-static void continuous_du_reset(void){assert(!s_image_zoom_bw);}
-static bool reader_single_image_page(void){assert(0);return false;}
-static void draw_zoomed_image(uint8_t *fb,EpdRect band,int scale,int cx,int cy,bool bw){
- (void)fb;(void)band;(void)scale;(void)cx;(void)cy;(void)bw;assert(0);
-}
 static int alloc_fail_after=-1,read_failure=-1,decode_failure=-1;
 static unsigned reads,decodes,pixels,notices,invalidations;
 static int reading_image;
@@ -206,7 +192,7 @@ static void free_book(void){
  book_layout_set_image_dims(NULL,NULL);s_reader_dims_ctx=(reader_dims_ctx_t){0};
 }
 '''
-for name in ('inline_ink_gray', 'reader_image_slots', 'reader_image_slot', 'reader_image_dims', 'alloc_page_bitmap', 'reader_zoom_reset', 'release_page_images', 'prepare_inline_image', 'draw_reader_images', 'heading_text_matches', 'load_chapter_at'):
+for name in ('inline_ink_gray', 'reader_image_slots', 'reader_image_slot', 'reader_image_dims', 'alloc_page_bitmap', 'release_page_images', 'prepare_inline_image', 'draw_reader_images', 'heading_text_matches', 'load_chapter_at'):
     unit += '\n' + function(name)
 unit += r'''
 static void setup_images(int count){

@@ -6,7 +6,7 @@ import subprocess,tempfile
 R=Path(__file__).resolve().parents[1]
 source=(R/'main/app/app_loop.c').read_text()
 start=source.index('        if (!touch.touched) pinch_drain = false;')
-end=source.index('        if (!pinch_input_owned && !power_input_owned && !menu_open) {',start)
+end=source.index('        if (!pinch_input_owned && !power_input_owned && !menu_open',start)
 block=source[start:end]
 assert 'continue;' not in block
 unit=r'''
@@ -20,6 +20,7 @@ typedef int app_redraw_t;
 enum{APP_REDRAW_NONE,APP_REDRAW_DONE};
 typedef struct{bool consumed,pressed,released;void*request_app;}app_ctx_t;
 static app_ctx_t ctx;
+static bool ai_owned;
 static bool wants=true,power_input_owned,menu_open,quick_input_owned,pinching,pinch_input_owned,pinch_drain;
 static struct{bool open;}s_quick;
 static struct{bool touched;int count;struct{int x,y;}points[2];}touch;
@@ -44,6 +45,7 @@ int main(void){
  err=0;pair();wants=false;tick();assert(!pinching&&end_count==2); // 掉卡不再调用旧图。/ No old-image callback after media loss.
  wants=true;touch.touched=false;touch.count=0;tick();
  power_input_owned=true;pair();assert(!pinching);power_input_owned=false;
+ ai_owned=true;pair();assert(!pinching);ai_owned=false;
  menu_open=true;pair();assert(!pinching);menu_open=false;
  s_quick.open=true;pair();assert(!pinching);s_quick.open=false;
  ctx.request_app=&desc;pair();assert(!pinching);

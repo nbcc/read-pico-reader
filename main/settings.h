@@ -24,10 +24,21 @@ typedef enum {
 
 void app_settings_init(void);
 app_sleep_mode_t app_settings_sleep_mode(void);
+#if KIIKO_BOARD_METALIO47
+typedef enum {APP_AI_REFRESH,APP_AI_BOOKMARK,APP_AI_FRONTLIGHT,APP_AI_HOME,APP_AI_NONE,APP_AI_ACTION_COUNT} app_ai_action_t;
+/// AI键短按独立保存在S31设置；仅成功提交才改变当前映射。/ Persist S31 AI taps, changing the live mapping only after a successful commit.
+app_ai_action_t app_settings_ai_short(void);
+esp_err_t app_settings_set_ai_short(app_ai_action_t action);
+#else
+#endif
 void app_settings_set_sleep_mode(app_sleep_mode_t mode);
 const char* app_sleep_mode_name(app_sleep_mode_t mode);
+#if KIIKO_BOARD_METALIO47
+/// S31关机：默认浅睡十分钟后同步RTC并硬关机；false立即断电，保存后生效。/ S31 syncs RTC and powers off after ten minutes of light sleep; false powers off immediately, effective after saving.
+#else
 /// 电源菜单“关机”：false 为彻底断电，true 为先浅睡 10 分钟再由 PMU 软睡断电。
 /// Power-menu shutdown: false powers fully off; true light-sleeps for 10 minutes, then PMU soft-sleeps.
+#endif
 bool app_settings_staged_shutdown(void);
 void app_settings_set_staged_shutdown(bool staged);
 /// 电源键开机次数：1 单击开机，2 双击开机；默认 1，已保存的选择继续保留。

@@ -68,7 +68,7 @@ TF カードは現在 FAT16/FAT32 に対応し、exFAT は有効になってい�
 
 本体は画像のプロジェクト名、バージョン、サイズとヘッダーを確認し、未使用側の領域だけに書き込みます。完全性の確認後に起動先を切り替え、新しい版が初回起動確認前に異常終了した場合は以前の版へ自動的に戻ります。更新中は電源と TF カードを外さないでください。アプリケーションだけの更新では、最初の OTA 基本版導入やパーティション表の変更はできません。
 
-ビルドには ESP-IDF v6.1 が必要です。ファームウェアには Noto Sans SC Medium のサブセットのみを内蔵し、追加のフォントや書籍は配布しません。
+ビルドには対応する ESP-IDF v6.1 SDK と、共有 `main/`・`components/` ソースからボードを選ぶ `--board pico|metalio47` が必要です（`python3 tools/build_firmware.py --board <board> --python /path/to/idf-python/bin/python`、Windows は `tools\build_board.ps1 -Board <board>`）。Pico は ESP32-S3（Xtensa）、Metalio は ESP32-S31（RISC-V）で、SDK、設定、出力先を分け、イメージを相互に書き込まないでください。詳細は [docs/BOARDS.md](docs/BOARDS.md) を参照してください。ファームウェアには Noto Sans SC Medium のサブセットのみを内蔵し、追加のフォントや書籍は配布しません。
 
 [ライセンスポリシー](LICENSE)は、採用後に初めて公開され、明示された新規独自制作物のみに個人学習・非商用条件を適用します。独自のソース公開ライセンスであり、OSI 承認のオープンソースライセンスではありません。既存コード、過去の配布物と各貢献者の権利は維持し、[Apache-2.0 全文](licenses/Apache-2.0.txt)も保存しています。上流コードは Apache-2.0、Lucide は ISC、epdiy は LGPL-3.0-or-later、内蔵フォントは SIL OFL 1.1 に従います。詳細は [第三者ライセンス一覧](THIRD_PARTY_NOTICES.md)をご覧ください。
 

@@ -13,6 +13,9 @@
  * 用户修订：输入只刷新变化区域，布局切换局部灰阶，避免打字累计整屏清残影。
  * User revision: input refreshes changed regions; layout switches use local grayscale, without accumulating whole-page cleanup.
  */
+#if KIIKO_BOARD_METALIO47
+#include "metalio_hw.h"
+#endif
 #include "ui_avatar.h"
 #include "book_cover_jobs.h"
 #include <dirent.h>
@@ -51,10 +54,11 @@
 #define FILE_MAX 96
 #define FILE_ROWS 9
 typedef struct { char path[288]; off_t size; bool is_dir; } file_item_t;
-// 文件操作始终用完整路径中的基名，显示名可截短但不能反过来重建路径。
-// File operations use the full basename from the real path; never rebuild a path from a clipped label.
+// 完整路径是文件身份；名称从末段取得，UI截短不能把长中文文件过滤掉或改写实际操作目标。
+// Full paths identify entries; derive the leaf so shortened UI labels cannot hide or redirect long filenames.
 static const char *file_item_name(const file_item_t *item) {
-    const char *name=strrchr(item->path,'/');return name?name+1:item->path;
+    const char *slash = strrchr(item->path, '/');
+    return slash ? slash + 1 : item->path;
 }
 // 文件列表放 PSRAM：内部 RAM 已被静态占用到约 90%，而 BLE 控制器只能用内部 RAM，
 // 列表这类大数组没必要跟它抢。
@@ -150,7 +154,11 @@ static bool file_pager_event(app_ctx_t *ctx,const ui_gesture_event_t *ev,app_red
     if(start<0&&s_pager_pressed<0)return false;
     *redraw=APP_REDRAW_NONE;
     if(s_scan_pending)return true;
-    if(ev->type==UI_GESTURE_PRESS){s_pager_pressed=start;*redraw=file_pager_paint(ctx);return true;}
+    if(ev->type==UI_GESTURE_PRESS){
+#if KIIKO_BOARD_METALIO47
+        if(start>=0)(void)metalio_haptic_click();
+#endif
+        s_pager_pressed=start;*redraw=file_pager_paint(ctx);return true;}
     if(ev->type==UI_GESTURE_MOVE&&start==end)return true;
     bool decorated=s_pager_pressed>=0;s_pager_pressed=UI_PAGER_NONE;
     if(ev->type==UI_GESTURE_TAP&&start>=0&&start==end){
@@ -221,13 +229,12 @@ static void migrate_book_state(const char *old_path, const char *new_path, uint3
 }
 
 static esp_err_t copy_selected_item(char out_name[128]) {
-    const char *dot = s_selected.is_dir ? NULL : strrchr(file_item_name(&s_selected), '.');
-    size_t stem_len = dot && dot != file_item_name(&s_selected) ? (size_t)(dot - file_item_name(&s_selected)) : strlen(file_item_name(&s_selected));
-    char stem[100], candidate[128], destination[288];
-    if (stem_len >= sizeof(stem)) stem_len = sizeof(stem) - 1;
-    while(stem_len&&((unsigned char)file_item_name(&s_selected)[stem_len]&0xc0)==0x80)--stem_len;
-    memcpy(stem, file_item_name(&s_selected), stem_len); stem[stem_len] = 0;
-    const char *ext = dot && dot != file_item_name(&s_selected) ? dot : "";
+    const char *name = file_item_name(&s_selected);
+    const char *dot = s_selected.is_dir ? NULL : strrchr(name, '.');
+    size_t stem_len = dot && dot != name ? (size_t)(dot - name) : strlen(name);
+    char stem[288], candidate[288], destination[288];
+    memcpy(stem, name, stem_len); stem[stem_len] = 0;
+    const char *ext = dot && dot != name ? dot : "";
     for (int number = 1; number < 100; ++number) {
         int used = number == 1 ? snprintf(candidate, sizeof(candidate), "%s 副本%s", stem, ext) :
             snprintf(candidate, sizeof(candidate), "%s 副本 %d%s", stem, number, ext);
@@ -366,7 +373,8 @@ static app_redraw_t move_selected(void) {
         snprintf(s_message, sizeof(s_message), "TF 卡不可用"); return APP_REDRAW_PAGE;
     }
     char destination[288];
-    if (snprintf(destination, sizeof(destination), "%s/%s", s_dir, file_item_name(&s_selected)) >= sizeof(destination)) {
+    int path_len = snprintf(destination, sizeof(destination), "%s/%s", s_dir, file_item_name(&s_selected));
+    if (path_len < 0 || (size_t)path_len >= sizeof(destination)) {
         snprintf(s_message, sizeof(s_message), "目标路径过长"); return APP_REDRAW_PAGE;
     }
     if (!strcmp(destination, s_selected.path)) {
@@ -421,8 +429,8 @@ static void scan_folder(int folder) {
     while (s_count < FILE_MAX && (entry = readdir(dir))) {
         if (entry->d_name[0] == '.' || !strncmp(entry->d_name, "._", 2)) continue;
         file_item_t *item = &s_files[s_count];
-        int path_n=snprintf(item->path,sizeof(item->path),"%s/%s",root,entry->d_name);
-        if(path_n<0||(size_t)path_n>=sizeof(item->path))continue;
+        int path_len = snprintf(item->path, sizeof(item->path), "%s/%s", root, entry->d_name);
+        if (path_len < 0 || (size_t)path_len >= sizeof(item->path)) continue;
         struct stat st;
         bool is_dir = false, is_file = false;
         if (!stat(item->path, &st)) {
@@ -736,6 +744,9 @@ static void render(app_ctx_t *ctx,uint8_t *fb) {
     s_render_secondary=previous || !main_page_visible(ctx);
     render_content(ctx,fb);
     s_render_secondary=previous;
+#if KIIKO_BOARD_METALIO47
+    display_monochrome_content(fb);
+#endif
 }
 
 static void on_enter(app_ctx_t *ctx) {
@@ -748,6 +759,10 @@ static void on_enter(app_ctx_t *ctx) {
     s_page = 0; s_scan_pending = true;
     read_pico_sd_start_probe();
     const esp_err_t info_status=read_pico_sd_get_info(&s_sd);
+#if KIIKO_BOARD_METALIO47
+    // 首帧目录/字体先读完，空闲轮询再统计；FAT统计会占用卷锁。
+    // Finish first-frame directory/font reads before idle accounting takes the FAT volume lock.
+#endif
     s_space_poll_ms=ctx->now_ms;
     s_sd_format_confirm = false;
     s_sd_notice[0] = 0;
@@ -780,11 +795,19 @@ static app_redraw_t on_tick(app_ctx_t *ctx) {
     }
     if (!s_scan_pending) {
         if (s_folder<0 && s_sd.mounted && !(ctx->touch && ctx->touch->touched) && ctx->now_ms-s_space_poll_ms>=
+#if KIIKO_BOARD_METALIO47
             (s_sd.space_valid?15000:500)
+#else
+            (s_sd.space_valid?15000:500)
+#endif
             ) {
             s_space_poll_ms=ctx->now_ms;
             read_pico_sd_info_t previous=s_sd;
+#if KIIKO_BOARD_METALIO47
             (void)read_pico_sd_start_space_refresh();
+#else
+            (void)read_pico_sd_start_space_refresh();
+#endif
             read_pico_sd_get_info(&s_sd);
             if (previous.space_valid!=s_sd.space_valid || previous.filesystem_bytes!=s_sd.filesystem_bytes || previous.free_bytes!=s_sd.free_bytes)
                 return APP_REDRAW_PAGE;
@@ -793,6 +816,9 @@ static app_redraw_t on_tick(app_ctx_t *ctx) {
     }
     if (read_pico_sd_get_info(&s_sd) == ESP_ERR_NOT_FINISHED) return APP_REDRAW_NONE;
     s_scan_pending = false;
+#if KIIKO_BOARD_METALIO47
+    // 首帧扫描后再从空闲轮询启动统计。/ Start accounting from idle polling after the first directory frame.
+#endif
     s_space_poll_ms=ctx->now_ms;
     for (int i = 0; i < 3; ++i) s_counts[i] = count_root(i);
     if (s_folder >= 0) scan_folder(s_folder);
@@ -805,7 +831,14 @@ static void open_selected(app_ctx_t *ctx) {
     if (!ext) { snprintf(s_message, sizeof(s_message), "没有可用的打开方式"); return; }
     if (!strcasecmp(ext, ".epub") || !strcasecmp(ext, ".txt")) {
         extern const app_desc_t app_book;
+#if KIIKO_BOARD_METALIO47
+        if (app_book_request_open(s_selected.path)) {
+            (void)metalio_haptic_click();
+            ctx->request_app = &app_book;
+        }
+#else
         if (app_book_request_open(s_selected.path)) ctx->request_app = &app_book;
+#endif
     } else if (!strcasecmp(ext, ".jpg") || !strcasecmp(ext, ".jpeg") || !strcasecmp(ext, ".png")) {
         extern const app_desc_t app_image;
         if (app_image_request_open(s_selected.path)) ctx->request_app = &app_image;
@@ -918,6 +951,11 @@ static app_redraw_t rename_paint(app_ctx_t *ctx, bool field) {
     return update.area.width ? APP_REDRAW_AREA : APP_REDRAW_NONE;
 }
 static bool files_present(app_ctx_t *ctx, app_redraw_t redraw) {
+#if KIIKO_BOARD_METALIO47
+    if(redraw==APP_REDRAW_AREA){
+        display_monochrome_content(ctx->fb);
+    }
+#endif
     bool pager=s_pager_paint_pending;s_pager_paint_pending=false;
     if(pager&&redraw==APP_REDRAW_AREA&&!ctx->request_app&&
         (s_view==FILE_VIEW_LIST||s_view==FILE_VIEW_MOVE)){
@@ -1132,7 +1170,11 @@ static void files_before_lock(app_ctx_t *ctx) { (void)ctx;s_pager_pressed=UI_PAG
 static void files_exit(app_ctx_t *ctx) { files_before_lock(ctx); ui_keyboard_end(); }
 
 const app_desc_t app_files = {
+#if KIIKO_BOARD_METALIO47
+    .binary_ui = true,
+#else
     .binary_ui = false,
+#endif
     .title = "文件管理 Files", .detail = "TF 卡文件与传输", .enter_full = false,
     .owns_keys = true, .menu_handle_enabled = no_menu_handle,
     .main_page_visible = main_page_visible, .edge_back_enabled = files_edge_back,

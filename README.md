@@ -72,14 +72,14 @@ kiikoread checks the image project, version, size, and headers before writing th
 
 ## Build from source
 
-Use ESP-IDF **v6.1** for ESP32-S3:
+The repository keeps one shared `main/` and `components/` source tree; `boards/<board>/` supplies the hardware backend, sdkconfig, partition table and dependency lock. Select the device with `--board pico|metalio47` and a matching ESP-IDF **v6.1** SDK:
 
 ```sh
-idf.py set-target esp32s3
-idf.py build
+python3 tools/build_firmware.py --board pico --python /path/to/idf-python/bin/python
+python3 tools/build_firmware.py --board metalio47 --python /path/to/idf-python/bin/python
 ```
 
-The board-specific flash and PSRAM timing is in `sdkconfig.defaults`. `sdkconfig.ci` is for compile checks only. Follow the [MindReset hardware documentation](https://dot.mindreset.tech/docs/read_0) for the board. A prebuilt firmware image is provided for the RDP-G01-W only.
+Pico is ESP32-S3 (Xtensa), Metalio is ESP32-S31 (RISC-V); each needs its own SDK/toolchain, config and output directory, and the two images are never interchangeable. On Windows the wrapper is `tools\build_board.ps1 -Board pico|metalio47`. See [docs/BOARDS.md](docs/BOARDS.md) for the full build matrix, partition tables and flash offsets. A prebuilt firmware image is provided for the RDP-G01-W only.
 
 ## Books and fonts
 

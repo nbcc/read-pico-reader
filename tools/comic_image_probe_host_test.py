@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LicenseRef-Kiikoread-Personal-Study-1.0
-"""实际EPUB图片尺寸探测：小头部IO、晚JPEG/SVG回退及完整提取CRC。
-Probe real EPUB image dimensions, bounded header IO, late JPEG/SVG fallback and full-payload CRC.
-"""
+"""实际EPUB图片尺寸探测：小头部IO、晚JPEG/SVG回退及完整提取CRC。"""
 from pathlib import Path
 import argparse,json,random,struct,subprocess,tempfile,zipfile
 from home_cover_cache_host_test import function

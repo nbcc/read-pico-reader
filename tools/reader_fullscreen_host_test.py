@@ -15,6 +15,8 @@ unit = r'''
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include "book/book_file_path.h"
 typedef struct {int x,y,width,height;} EpdRect;
 typedef struct {int64_t now_ms;int leaf;} app_ctx_t;
 typedef enum {APP_REDRAW_NONE,APP_REDRAW_AREA,APP_REDRAW_PAGE} app_redraw_t;
@@ -26,6 +28,14 @@ enum {READING,TOC,SHELF,READER_PANEL_NONE,READER_PANEL_TOOLS};
 #define ESP_LOGI(...) ((void)0)
 static char s_requested_open[288];
 static bool s_requested_fullscreen=true,s_requested_open_home;
+// Real reader_zoom_reset dependencies: keep its cleanup in the exercised turn path.
+#define READER_IMAGE_ZOOM_MIN 1000
+static bool s_zoom_active,s_image_pan_active,s_image_zoom_bw;
+static int s_zoom_slot,s_image_zoom;
+static size_t s_image_zoom_page,s_zoom_bits_bytes;
+static uint32_t s_image_zoom_start_distance;
+static uint8_t *s_zoom_bits;
+static struct {bool pending;} s_reader_tap;
 static const char *s_text="text";
 static size_t s_text_len=900,s_block_count,s_chapter,s_page,s_jump_offset;
 static void *s_blocks;
@@ -61,6 +71,9 @@ static void free_book(void){assert(!draw_locked);s_text=NULL;}
 static size_t book_chapter_count(void){return 2;}
 static bool load_chapter(app_ctx_t *ctx,size_t chapter,int off,bool last){(void)ctx;(void)off;if(load_failed)return false;s_chapter=chapter;s_page=last?book_layout_page_count()-1:0;return true;}
 static void set_reader_view(int view){s_view=view;}
+// 目录实现另有真实源测试；这里记录边界失败返回的当前位置。/ TOC has its own source tests; track the failed-turn anchor here.
+static size_t current_toc_position(void){return s_chapter;}
+static int book_toc_open(size_t current){assert(current==s_chapter);return (int)current;}
 static void skip_hidden_image_pages(app_ctx_t *ctx,int dir){(void)ctx;(void)dir;}
 static uint8_t app_settings_reader_full_pages(void){return full_pages;}
 static int effect=1;
@@ -79,7 +92,7 @@ static void book_layout_set_first_line_indent(unsigned em){assert(draw_locked);l
 static void book_layout_set_first_line_indent_adjust(int px){assert(draw_locked);layout_adjustment=px;}
 """
 unit += function('apply_reader_indent', BOOK) + '\n'
-for name in ('app_book_request_open', 'app_book_request_open_from_home', 'app_book_request_resume',
+for name in ('reader_zoom_reset', 'app_book_request_open', 'app_book_request_open_from_home', 'app_book_request_resume',
              'toggle_reader_fullscreen', 'reader_turn_chrome', 'turn_page'):
     unit += function(name, BOOK) + '\n'
 unit += r'''
@@ -99,7 +112,8 @@ int main(void){
  failed_reflows=1;
  assert(apply_reader_indent(&ctx,3,12)==APP_REDRAW_NONE&&indent==2&&adjustment==-7&&layout_indent==2&&layout_adjustment==-7&&saves==1);
  assert(book_layout_page_start_offset(s_page)==anchor&&!draw_locked);
- assert(apply_reader_indent(&ctx,2,21)==APP_REDRAW_NONE&&saves==1);
+ assert(apply_reader_indent(&ctx,2,101)==APP_REDRAW_NONE&&saves==1);
+ assert(apply_reader_indent(&ctx,2,-101)==APP_REDRAW_NONE&&saves==1);
 
  assert(app_book_request_open("/sdcard/book.epub")&&s_requested_fullscreen&&!s_requested_open_home);
  assert(app_book_request_resume("/sdcard/book.epub",false)&&!s_requested_fullscreen&&s_requested_open_home);
@@ -107,7 +121,12 @@ int main(void){
  assert(!app_book_request_open(NULL)&&!app_book_request_open(""));
  for(int full=0;full<2;++full)for(int tools=0;tools<2;++tools)for(int dir=-1;dir<=1;dir+=2){
   reset(full,tools,2,0);size_t destination=book_layout_page_start_offset(s_page+dir);
+  s_zoom_bits=malloc(32);assert(s_zoom_bits);s_zoom_bits_bytes=32;
+  s_zoom_active=s_image_pan_active=s_image_zoom_bw=s_reader_tap.pending=true;
+  s_zoom_slot=2;s_image_zoom=2000;s_image_zoom_page=2;s_image_zoom_start_distance=99;
   app_redraw_t r=turn_page(&ctx,dir);
+  assert(!s_zoom_bits&&!s_zoom_bits_bytes&&!s_zoom_active&&!s_image_pan_active&&!s_image_zoom_bw&&!s_reader_tap.pending);
+  assert(s_zoom_slot==-1&&s_image_zoom==READER_IMAGE_ZOOM_MIN&&s_image_zoom_page==SIZE_MAX&&!s_image_zoom_start_distance);
   assert(s_reader_fullscreen&&s_reader_panel==READER_PANEL_NONE&&s_reader_slider==-1);
   assert(s_stats_pending_turns==1&&s_session_turns==1&&paints==1);
   assert(book_layout_page_start_offset(s_page)<=destination&&destination<book_layout_page_start_offset(s_page)+layout_span);
@@ -140,6 +159,17 @@ int main(void){
  assert(s_text&&!s_reader_fullscreen&&!s_toolbar&&layout_span==100&&s_page==3&&reflows==2);
  reset(false,true,2,0);failed_reflows=2;assert(turn_page(&ctx,1)==APP_REDRAW_PAGE);
  assert(!s_text&&s_view==SHELF&&!paints&&!s_stats_pending_turns&&s_message[0]);
+ // 速读黑白严格使用Pico既有0/5/10/15/30间隔，没有隐藏十页清理上限。
+ // Fast BW uses Pico's existing0/5/10/15/30 intervals without a hidden ten-turn cap.
+ const unsigned intervals[]={0,5,10,15,30};effect=2;
+ for(unsigned period=0;period<sizeof(intervals)/sizeof(intervals[0]);++period) {
+  reset(true,false,2,0);full_pages=intervals[period];
+  for(unsigned n=1;n<=65;++n) {
+   s_reader_text_frame=true;
+   assert(turn_page(&ctx,n&1?1:-1)==APP_REDRAW_AREA&&s_reader_turn_pending&&!s_water_turn_pending);
+   assert(s_reader_cleanup==(full_pages&&n%full_pages==0));
+  }
+ }
  puts("PASS: native full-screen entry and explicit sleep overrides; old-layout destination anchors; toolbar dismissal; chapter/boundary turns; failed reflow restores safely or returns to the shelf");
 }
 '''
@@ -147,5 +177,6 @@ with tempfile.TemporaryDirectory(dir=ROOT / 'build') as folder:
     c, exe = Path(folder) / 'test.c', Path(folder) / 'test'
     c.write_text(unit)
     subprocess.run(['cc', '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-fsanitize=address,undefined',
+                    '-I', str(ROOT / 'main'),
                     str(c), '-o', str(exe)], check=True)
     subprocess.run([str(exe)], check=True)

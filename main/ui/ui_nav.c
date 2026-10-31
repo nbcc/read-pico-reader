@@ -22,6 +22,10 @@
 #include "ui_kit.h"
 #include "settings.h"
 #include "ui_click_feedback.h"
+#if KIIKO_BOARD_METALIO47
+#include "metalio_hw.h"
+#else
+#endif
 #include "ttf_font.h"
 #include "ui_font.h"
 

@@ -51,6 +51,7 @@ typedef enum { UI_GESTURE_SWIPE_L, UI_GESTURE_SWIPE_R, UI_GESTURE_SWIPE_U, UI_GE
 #include <stdatomic.h>
 #include "ui_text_edit.h"
 #include "book_shelf_categories.h"
+#include "book_file_path.h"
 #define ESP_OK 0
 #define ESP_FAIL -1
 #define ESP_ERR_NVS_NOT_FOUND -2
@@ -187,6 +188,8 @@ static int book_epub_metadata_cached(const char* path,char* title,size_t tcap,ch
 static bool book_title_get(const char* path,char* out,size_t cap){(void)path;(void)out;(void)cap;return false;}
 static void book_title_clean_import(char* title){(void)title;}
 static bool book_title_from_path(const char* path,char* out,size_t cap){const char* name=strrchr(path,'/');name=name?name+1:path;size_t n=strlen(name);const char* dot=strrchr(name,'.');if(dot)n=(size_t)(dot-name);if(n>=cap)n=cap-1;memcpy(out,name,n);out[n]=0;return n>0;}
+static bool book_name_from_path(const char*p,char*t,size_t n,char*a,size_t z){if(a&&z)a[0]=0;return book_title_from_path(p,t,n);}
+static bool book_author_clean_display(char*a,size_t n){(void)a;(void)n;return false;}
 static void clean_filename(char* out,size_t cap,const char* name){size_t n=strlen(name);if(n>=cap)n=cap-1;memcpy(out,name,n);out[n]=0;}
 typedef struct pending_progress {char path[288];book_progress_t value;bool dirty,progress_saved;book_progress_watch_t* watch;struct pending_progress* next;} pending_progress_t;
 static pending_progress_t* s_pending;
@@ -218,6 +221,7 @@ static int book_progress_save(const char* p,const book_progress_t* value){(void)
 static int book_progress_set_last_path(const char* p){test_last_calls++;if(!test_last_error)snprintf(test_last_path,sizeof(test_last_path),"%s",p);return test_last_error;}
 static void save_progress(void);
 static void invalidate_prep(void){}
+static void pause_reader_prep(void){invalidate_prep();}
 static void invalidate_covers(void){}
 static shelf_entry_t s_managed;
 static bool s_delete_confirm,s_file_removed,s_clear_confirm;
@@ -231,7 +235,11 @@ static bool app_font_activate_system(void){assert(test_draw_locked);test_system_
 static bool app_font_activate_reading(void){assert(test_draw_locked);test_system_face=false;return true;}
 static bool s_toc_jump_open,s_toc_jump_drag;
 static int s_toc_jump_percent;
-typedef enum {READER_PANEL_NONE,READER_PANEL_TOOLS} reader_panel_t;
+typedef enum {READER_PANEL_NONE,READER_PANEL_TOOLS,READER_PANEL_FONT_PICKER,READER_PANEL_FONT_RECOVERY,READER_PANEL_ONLINE_FONTS} reader_panel_t;
+static unsigned font_recovery_resets;static int s_online_fonts,s_font_page;
+static void reader_font_recovery_reset(void){++font_recovery_resets;}
+static void ui_online_fonts_close(int *state){(void)state;}
+static void ttf_font_scan(void){}
 static reader_panel_t s_reader_panel;
 static int s_reader_slider=-1;
 static bool s_reader_slider_endpoint;
@@ -266,6 +274,11 @@ static size_t s_text_len=4,s_block_count;
 typedef struct {int image;unsigned image_width,image_height;} blk_t;
 static blk_t* s_blocks;
 static char **s_images;
+#define READER_IMAGE_ZOOM_MIN 100
+static bool s_image_zoom_bw,s_zoom_active,s_image_pan_active;
+static int s_image_zoom=READER_IMAGE_ZOOM_MIN;
+static size_t s_image_zoom_page=SIZE_MAX;
+static void continuous_du_reset(void){}
 static size_t s_image_count;
 static unsigned test_image_probes;
 static int book_chapter_image_dimensions(size_t chapter,const char *name,unsigned *width,unsigned *height){
