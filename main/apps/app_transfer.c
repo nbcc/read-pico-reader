@@ -300,6 +300,7 @@ static void weread_clip(char* text, int px, int width) {
 }
 
 static bool weread_start_session(void) {
+    s_weread_message[0] = 0;
     if (!s_status.wifi_configured) {
         snprintf(s_weread_message, sizeof(s_weread_message), "请先在「WiFi传书」里连接网络");
         return false;
@@ -468,6 +469,11 @@ static app_redraw_t weread_action(void) {
         s_weread_started = weread_start_session();
         return APP_REDRAW_PAGE;
     }
+    if (s_weread.state == RW_IDLE) {
+        if (s_weread.logged_in) (void)read_pico_transfer_weread_shelf();
+        else (void)read_pico_transfer_weread_login();
+        return APP_REDRAW_PAGE;
+    }
     if (s_weread.state == RW_ERROR) {
         read_pico_transfer_weread_cancel();
         // 有会话就重试书架，没有才重新扫码；避免一次网络抖动就逼用户重扫。
@@ -631,6 +637,23 @@ static void draw_weread(uint8_t* fb) {
             weread_text_center(fb, 500, 22,
                                s_weread.state == RW_QR ? "请用微信扫码" : "等待手机确认…");
             weread_text_center(fb, 552, 19, s_weread.message);
+            break;
+        case RW_IDLE:
+            if (!s_weread_accepted) {
+                weread_text_center(fb, 260, 24, "微信读书");
+                weread_text_center(fb, 330, 20, "首次使用需确认：登录后把书架上的书缓存到本机。");
+                ui_draw_button(fb, weread_action_rect(), "同意并继续", false);
+            } else if (!s_weread.logged_in) {
+                weread_text_center(fb, 260, 24, "未登录");
+                weread_text_center(fb, 330, 20, s_weread_message[0] ? s_weread_message
+                                   : "请先在「WiFi传书」里连接网络");
+                ui_draw_button(fb, weread_action_rect(), "重试登录", false);
+            } else {
+                weread_text_center(fb, 300, 24, "已登录");
+                weread_text_center(fb, 372, 20, s_weread.message[0] ? s_weread.message
+                                   : "正在载入书架…");
+                ui_draw_button(fb, weread_action_rect(), "刷新书架", false);
+            }
             break;
         default:
             weread_text_center(fb, 300, 24, "已登录");
