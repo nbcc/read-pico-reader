@@ -2228,7 +2228,7 @@ esp_err_t read_pico_transfer_start(const read_pico_transfer_cfg_t *cfg) {
     if (err != ESP_OK) goto fail;
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
     init.nvs_enable = false; // 与原厂S31一致；凭据只由本设备设置区管理。/ Reference S31 RAM-only driver config.
-    transfer_s31_bulk_receive_config(&init, !cfg->network_only);
+    transfer_s31_bulk_receive_config(&init, !cfg->network_only && !weread);
     err = esp_wifi_init(&init); if (err != ESP_OK) goto fail;
     s_wifi = true;
     s_active_static_rx = init.static_rx_buf_num;
