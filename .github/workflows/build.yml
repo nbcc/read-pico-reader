@@ -52,6 +52,15 @@ jobs:
           python3 tools/vertical_number_host_test.py
           cc -std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Werror -g -fsanitize=address,undefined -fno-omit-frame-pointer -Imain/book -Imain -Itools/book_layout_stubs -Itools/book_source_host_stubs tools/book_layout_host_test.c main/book/book_layout.c main/book/html_text.c -o build/book-tests/layout
           build/book-tests/layout
+          mkdir -p build/weread-tests
+          cc -std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Werror -g -fsanitize=address,undefined -fno-omit-frame-pointer -Icomponents/read_pico_transfer/weread tools/weread_protocol_host_test.c components/read_pico_transfer/weread/weread_protocol.c -o build/weread-tests/protocol
+          build/weread-tests/protocol
+          cc -std=c11 -D_DEFAULT_SOURCE -DWEREAD_HOST_TEST -Wall -Wextra -Werror -g -fsanitize=address,undefined -fno-omit-frame-pointer -Icomponents/read_pico_transfer/weread tools/weread_session_host_test.c components/read_pico_transfer/weread/weread_session.c -o build/weread-tests/session
+          build/weread-tests/session
+          cc -std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Werror -g -fsanitize=address,undefined -fno-omit-frame-pointer -Icomponents/read_pico_transfer/weread tools/weread_shelf_host_test.c components/read_pico_transfer/weread/weread_shelf.c components/read_pico_transfer/weread/weread_json.c components/read_pico_transfer/weread/weread_bookpath.c components/read_pico_transfer/weread/weread_protocol.c -o build/weread-tests/shelf
+          build/weread-tests/shelf
+          cc -std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Werror -g -fsanitize=address,undefined -fno-omit-frame-pointer -Icomponents/read_pico_transfer/weread tools/weread_content_host_test.c components/read_pico_transfer/weread/weread_content.c components/read_pico_transfer/weread/weread_xhtml.c components/read_pico_transfer/weread/weread_toc.c components/read_pico_transfer/weread/weread_zip.c components/read_pico_transfer/weread/weread_json.c components/read_pico_transfer/weread/weread_protocol.c -o build/weread-tests/content
+          build/weread-tests/content
 
   build:
     runs-on: ubuntu-latest
