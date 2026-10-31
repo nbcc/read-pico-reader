@@ -201,6 +201,7 @@ static ui_text_edit_t s_password_input;
 static read_pico_weread_status_t s_weread;
 static uint32_t s_weread_revision;
 static char s_weread_qr[192];
+static char s_weread_qr_tried[192];
 static char s_weread_message[96];
 static bool s_weread_started, s_weread_accepted;
 
@@ -376,6 +377,7 @@ static void weread_enter(void) {
     s_weread_revision = 0;
     memset(&s_weread, 0, sizeof(s_weread));
     s_weread_qr[0] = 0;
+    s_weread_qr_tried[0] = 0;
     s_weread_message[0] = 0;
     s_weread_started = false;
     s_shelf_page = 0;
@@ -399,6 +401,7 @@ static void weread_leave(void) {
     }
     ui_wifi_qr_clear();
     s_weread_qr[0] = 0;
+    s_weread_qr_tried[0] = 0;
     s_weread_message[0] = 0;
     s_shelf_page = 0;
     s_shelf_pages = 1;
@@ -443,16 +446,18 @@ static app_redraw_t weread_tick(app_ctx_t* ctx) {
 
     const bool qr_state = next.state == RW_QR || next.state == RW_WAIT_SCAN;
     if (qr_state && next.qr_url[0] && strcmp(next.qr_url, s_weread_qr)) {
-        if (ui_wifi_qr_prepare_url(next.qr_url)) {
+        if (ui_wifi_qr_prepare_text(next.qr_url)) {
             snprintf(s_weread_qr, sizeof(s_weread_qr), "%s", next.qr_url);
             wr_debug_log("qr prepared url_len=%u", (unsigned)strlen(next.qr_url));
             changed = true;
-        } else {
+        } else if (strcmp(next.qr_url, s_weread_qr_tried)) {
+            snprintf(s_weread_qr_tried, sizeof(s_weread_qr_tried), "%s", next.qr_url);
             wr_debug_log("qr prepare failed url_len=%u", (unsigned)strlen(next.qr_url));
         }
     } else if (!qr_state && s_weread_qr[0]) {
         ui_wifi_qr_clear();
         s_weread_qr[0] = 0;
+        s_weread_qr_tried[0] = 0;
         changed = true;
     }
     if (next.state == RW_SHELF && !next.loading && (changed || !s_shelf_rows_valid)) {
@@ -1367,6 +1372,7 @@ static void on_enter(app_ctx_t* ctx) {
     s_weread_started = false;
     s_weread_revision = 0;
     s_weread_qr[0] = 0;
+    s_weread_qr_tried[0] = 0;
     s_weread_message[0] = 0;
     s_direct_entry = s_usb_requested || s_wifi_upload_requested || s_hotspot_requested || s_weread_requested;
     s_usb_entry = s_usb_requested;

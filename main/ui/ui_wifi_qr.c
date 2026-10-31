@@ -91,6 +91,16 @@ bool ui_wifi_qr_prepare_url(const char* url) {
     return prepare_payload(url);
 }
 
+bool ui_wifi_qr_prepare_text(const char* text) {
+    ui_wifi_qr_clear();
+    if (!text) return false;
+    size_t length = strnlen(text, 320);
+    if (!length || length >= 320) return false;
+    for (size_t i = 0; i < length; ++i)
+        if ((unsigned char)text[i] < 0x21 || (unsigned char)text[i] > 0x7e) return false;
+    return prepare_payload(text);
+}
+
 void ui_wifi_qr_draw(uint8_t* fb, EpdRect area) {
     epd_fill_rect(area, 0xff, fb);
     if (!s_side) return;
