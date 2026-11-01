@@ -7454,7 +7454,7 @@ static void book_on_media_ready(app_ctx_t* ctx) {
 }
 // 控件编号仅用于保持按下与抬起命中同一个目标。/ IDs pair a press with release on the same control.
 static int control_at(app_ctx_t* ctx, uint16_t x, uint16_t y, EpdRect* rect) {
-    if (s_view==SHELF && (s_category_menu || ui_rect_hit((EpdRect){24,79,388,74},x,y))) return -1;
+    if (s_view==SHELF && (s_category_menu || ui_rect_hit((EpdRect){24,79,280,74},x,y))) return -1;
     if (s_view == BULK) return bulk_control_at(ctx, x, y, rect);
     if (s_view == MANAGE) {
         *rect = manage_back_rect();
@@ -7846,7 +7846,7 @@ static app_redraw_t gesture_event(app_ctx_t* ctx, const ui_gesture_event_t* ev) 
     bool indent_handled=false;
     app_redraw_t indent_redraw=reader_indent_gesture(ctx,ev,&indent_handled);
     if(indent_handled)return indent_redraw;
-    if (s_view==SHELF && (s_category_menu || ui_rect_hit((EpdRect){24,79,388,74},ev->x0,ev->y0)))
+    if (s_view==SHELF && (s_category_menu || ui_rect_hit((EpdRect){24,79,280,74},ev->x0,ev->y0)))
         return shelf_category_gesture(ctx,ev);
     if (s_view == READING && (s_reader_panel == READER_PANEL_BACKGROUND ||
         s_reader_panel == READER_PANEL_BACKGROUND_PREVIEW) &&
