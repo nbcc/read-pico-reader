@@ -4191,6 +4191,12 @@ static enum EpdDrawError reader_soft_present(app_ctx_t* ctx,EpdRect area) {
 #endif
 
 static bool present(app_ctx_t* ctx, app_redraw_t redraw) {
+    // 扫描完成前不呈现空书架，避免先出占位页再整页重画。
+    // Do not present an empty shelf before the scan finishes; avoid a placeholder page followed by a full repaint.
+    if (s_view == SHELF && s_scan_pending) {
+        ESP_LOGI(TAG,"shelf present deferred until scan");
+        return true;
+    }
 #if KIIKO_BOARD_METALIO47
     if(s_view==READING&&s_reader_panel==READER_PANEL_ONLINE_FONTS){
         s_reader_panel_frame.valid=false;
@@ -5499,6 +5505,7 @@ static bool shelf_backfill_read_books(bool* truncated) {
 
 static void scan_shelf(app_ctx_t* ctx) {
     const int64_t scan_start_ms=esp_timer_get_time()/1000;
+    int64_t roots_ms=scan_start_ms, dirs_ms=scan_start_ms, backfill_ms=scan_start_ms;
     const uint32_t progress_revision=book_progress_revision();
     shelf_category_init();
     for (int i=2;i<s_category_count;++i) s_categories[i].available=false;
@@ -5511,6 +5518,8 @@ static void scan_shelf(app_ctx_t* ctx) {
     book_store_root_t roots[BOOK_STORE_ROOT_MAX];
     int n = 0;
     esp_err_t root_err = book_store_roots(roots, &n);
+    roots_ms=esp_timer_get_time()/1000;
+    ESP_LOGI(TAG,"shelf scan roots ms=%lld roots=%d err=%d",(long long)(roots_ms-scan_start_ms),n,(int)root_err);
     bool truncated = false, unreadable = root_err != ESP_OK || book_store_roots_degraded(), skipped = false;
     nvs_handle_t favorites = 0;
     nvs_handle_t hidden = 0;
@@ -5532,6 +5541,8 @@ static void scan_shelf(app_ctx_t* ctx) {
         scan_shelf_dir(ctx, roots[i].path, roots[i].is_flash, favorites, hidden,
                        &truncated, &unreadable, &skipped);
     }
+    dirs_ms=esp_timer_get_time()/1000;
+    ESP_LOGI(TAG,"shelf scan dirs ms=%lld books=%d",(long long)(dirs_ms-roots_ms),s_count);
     if (ctx->request_app) {
         if (favorites) nvs_close(favorites);
         if (hidden) nvs_close(hidden);
@@ -5556,9 +5567,12 @@ static void scan_shelf(app_ctx_t* ctx) {
     // 补齐书根目录之外读过的书；显式移出书架的除外。
     // Backfill books read outside the roots, minus the ones removed from the shelf.
     (void)shelf_backfill_read_books(&truncated);
+    backfill_ms=esp_timer_get_time()/1000;
+    ESP_LOGI(TAG,"shelf scan backfill ms=%lld books=%d",(long long)(backfill_ms-dirs_ms),s_count);
     shelf_categories_recount();
     sort_shelf(ctx);
     if (s_view==SHELF) shelf_category_restore(ctx);
+    ESP_LOGI(TAG,"shelf scan sort ms=%lld",(long long)(esp_timer_get_time()/1000-backfill_ms));
     s_latest_path[0] = 0;
     char last_path[BOOK_STORE_PATH_MAX];
     if (book_progress_last_path(last_path, sizeof(last_path))) {
