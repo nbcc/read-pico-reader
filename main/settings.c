@@ -154,7 +154,9 @@ static bool s_ble_turner;
 #if KIIKO_BOARD_METALIO47
 static app_ai_action_t s_ai_short=APP_AI_REFRESH;
 #endif
-static bool s_shelf_recent_sort;
+// 书架默认按最近活动排序；未读过的书按添加时间补位。
+// The shelf defaults to recent activity; unread books fall back to their addition time.
+static bool s_shelf_recent_sort = true;
 // 书内自带字体默认开启：多数带字体的书排版就是靠它才对得上版。
 // Embedded book faces are on by default: most books that ship a face only typeset correctly
 // with it.

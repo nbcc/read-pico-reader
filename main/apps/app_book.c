@@ -1264,8 +1264,17 @@ static int leaves(void) {
     int rows = s_view == BULK ? BOOK_BULK_ROWS : shelf_rows();
     return count ? 1 + (count - 1) / rows : 1;
 }
+static EpdRect shelf_sort_rect(void) { return (EpdRect){333, 94, 97, 54}; }
 static EpdRect shelf_manage_rect(void) { return (EpdRect){442, 94, 97, 54}; }
 static EpdRect shelf_import_rect(void) { return (EpdRect){551, 94, 97, 54}; }
+static void draw_shelf_sort_button(uint8_t *fb, EpdRect r) {
+    bool pressed = s_pressed_control == 113;
+    ui_fill_round_rect(fb, r, 18, UI_GRAY_WHITE);
+    ui_draw_control_frame(fb, r, 18, 0x70);
+    if (pressed) ui_draw_pressed_round_rect(fb, r, 18);
+    ui_text_vc(fb, r.x + r.width / 2, r.y + r.height / 2 + (pressed ? 2 : 0), 20,
+               s_recent_sort ? "最近" : "名称", EPD_DRAW_ALIGN_CENTER, false);
+}
 static void draw_shelf_header_button(uint8_t *fb, EpdRect r, bool importing) {
     bool pressed = s_pressed_control == (importing ? 115 : 114);
     ui_fill_round_rect(fb, r, 18, UI_GRAY_WHITE);
@@ -4003,11 +4012,12 @@ static void render(app_ctx_t* ctx, uint8_t* fb) {
     ui_nav_status(fb);
     char category_title[BOOK_STORE_PATH_MAX];
     copy_text(category_title,sizeof(category_title),s_category_selected ? shelf_category_name(s_category_selected) : "书架");
-    fit_text(category_title,52,326);
+    fit_text(category_title,52,240);
     ui_text(fb, 36, 90, 52, category_title, EPD_DRAW_ALIGN_LEFT, false);
     int title_width=ui_text_fixed_width_px(ui_text_effective_px(52),category_title);
     ui_draw_icon(fb,36+title_width+27,120,26,
                  s_category_menu ? UI_ICON_CHEVRON_UP : UI_ICON_CHEVRON_DOWN,UI_GRAY_BLACK);
+    draw_shelf_sort_button(fb, shelf_sort_rect());
     draw_shelf_header_button(fb, shelf_manage_rect(), false);
     draw_shelf_header_button(fb, shelf_import_rect(), true);
     if (s_message[0] || s_shelf_warning[0])
@@ -7231,6 +7241,12 @@ static app_redraw_t action_at(app_ctx_t* ctx, uint16_t x, uint16_t y) {
             int pager=ui_pager_hit(x,y);
             if(pager>=0)return shelf_turn_page(ctx,ui_pager_target(pager,ctx->leaf,leaves())-ctx->leaf);
         }
+        if (s_view == SHELF && ui_rect_hit(shelf_sort_rect(), x, y)) {
+            s_recent_sort = !s_recent_sort;
+            app_settings_set_shelf_recent_sort(s_recent_sort);
+            sort_shelf(ctx);
+            return APP_REDRAW_PAGE;
+        }
         if (s_view == SHELF && ui_rect_hit(shelf_import_rect(), x, y)) {
             s_view = IMPORT;
             return APP_REDRAW_PAGE;
@@ -7491,6 +7507,7 @@ static int control_at(app_ctx_t* ctx, uint16_t x, uint16_t y, EpdRect* rect) {
         *rect = ui_bar_rect(i, 3);
         if (ui_rect_hit(*rect, x, y)) return 100 + i;
     }
+    if (s_view == SHELF && ui_rect_hit(shelf_sort_rect(), x, y)) { *rect = shelf_sort_rect(); return 113; }
     if (s_view == SHELF && ui_rect_hit(shelf_manage_rect(), x, y)) { *rect = shelf_manage_rect(); return 114; }
     if (s_view == SHELF && ui_rect_hit(shelf_import_rect(), x, y)) { *rect = shelf_import_rect(); return 115; }
     if (s_view == SHELF) {
