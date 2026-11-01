@@ -2,8 +2,8 @@
  * 中文：阅读采用默认灰阶表相序（厂家 2.0.76 起完整 GL48），等值保持由派生表保证。
  * English: Reading uses the default gray-table order (full GL48 since vendor 2.0.76)
  *         with equal pairs held by the derived table.
- * 用户2026-10-29：普通保留Moku GL37加六相白，速读所选DU加四相白并保留定稿。
- * User2026-10-29: ordinary retains Moku GL37 plus six whites; FastBW adds four whites to the selected DU and retains settling.
+ * 用户2026-10-29：普通保留Moku GL37加六相白，速读所选DU加八相白并保留定稿。
+ * User2026-10-29: ordinary retains Moku GL37 plus six whites; FastBW adds eight whites to the selected DU and retains settling.
  */
 #include "display_reader_waveform.h"
 #include "display_main_waveform.h"
@@ -24,7 +24,7 @@ const EpdWaveform* display_reader_text_waveform(void) {
 }
 
 const EpdWaveform* display_reader_fast_text_waveform(void) {
-    enum { EXTRA_WHITE=4, CAPACITY=24 };
+    enum { EXTRA_WHITE=8, CAPACITY=32 };
     static uint8_t data[CAPACITY][16][4];
     static EpdWaveformPhases phases;
     static const EpdWaveformPhases* ranges[]={&phases};
