@@ -350,6 +350,7 @@ static unsigned s_store_revision;
 static uint32_t s_progress_revision=UINT32_MAX;
 static bool s_shelf_cache_valid, s_cache_sd_present, s_cache_sd_mounted;
 static bool s_shelf_cover_gate;
+static int64_t s_shelf_cover_gate_since_ms;
 static uint8_t s_cache_shelf_style;
 static bool s_scan_pending, s_clear_confirm;
 static reader_panel_t s_reader_panel;
@@ -5497,6 +5498,7 @@ static bool shelf_backfill_read_books(bool* truncated) {
 }
 
 static void scan_shelf(app_ctx_t* ctx) {
+    const int64_t scan_start_ms=esp_timer_get_time()/1000;
     const uint32_t progress_revision=book_progress_revision();
     shelf_category_init();
     for (int i=2;i<s_category_count;++i) s_categories[i].available=false;
@@ -5581,12 +5583,16 @@ static void scan_shelf(app_ctx_t* ctx) {
     s_store_revision = book_store_revision();
     s_progress_revision = progress_revision;
     s_shelf_cache_valid = !unreadable && !truncated;
+    ESP_LOGI(TAG,"shelf scan done ms=%lld books=%d roots=%d",
+             (long long)(esp_timer_get_time()/1000-scan_start_ms),s_count,n);
     // 重扫后先准备当前页封面，整页等封面齐了再输出，避免先画占位再补封面。
     // After a rescan, prepare the visible covers first and present the whole page once they are ready.
     s_shelf_cover_gate = s_view == SHELF;
     if (s_shelf_cover_gate) {
+        s_shelf_cover_gate_since_ms=esp_timer_get_time()/1000;
         prepare_covers(ctx);
         (void)prepare_cover_batch(ctx, true);
+        ESP_LOGI(TAG,"shelf cover gate begin pending=%u",(unsigned)__builtin_popcount(s_cover_pending_mask));
         if (!s_cover_pending_mask) s_shelf_cover_gate = false;
     }
     ESP_LOGI(TAG, "shelf books=%d roots=%d", s_count, n);
@@ -7265,6 +7271,8 @@ static app_redraw_t action_at(app_ctx_t* ctx, uint16_t x, uint16_t y) {
     return APP_REDRAW_NONE;
 }
 static void on_enter(app_ctx_t* ctx) {
+    ESP_LOGI(TAG,"shelf enter begin cache=%d pending=%d rev=%u",
+             s_shelf_cache_valid,(int)s_scan_pending,book_store_revision());
     reader_indent_hold_cancel();
     s_shelf_key_mode=s_shelf_key_paint_pending=false;s_shelf_key_delta=s_shelf_key_pressed=0;
     shelf_category_init();
@@ -7334,6 +7342,7 @@ static void on_enter(app_ctx_t* ctx) {
                  s_cache_shelf_style == app_settings_shelf_style() &&
                  s_store_revision == book_store_revision();
     s_scan_pending = !reuse;
+    ESP_LOGI(TAG,"shelf enter reuse=%d scan_pending=%d",reuse,(int)s_scan_pending);
     if (reuse) {
         refresh_cached_progress(ctx);
         (void)open_requested_book(ctx);
@@ -8328,11 +8337,14 @@ static app_redraw_t on_tick(app_ctx_t* ctx) {
     if (s_shelf_cover_gate) {
         if (s_view != SHELF || ctx->request_app || ctx->request_menu || ctx->request_return ||
             (ctx->touch && ctx->touch->touched)) {
+            ESP_LOGI(TAG,"shelf cover gate cancel pending=%u",(unsigned)__builtin_popcount(s_cover_pending_mask));
             s_shelf_cover_gate = false;
         } else {
             prepare_covers(ctx);
             (void)prepare_cover_batch(ctx, false);
             if (!s_cover_pending_mask) {
+                ESP_LOGI(TAG,"shelf cover gate done ms=%lld",
+                         (long long)(esp_timer_get_time()/1000-s_shelf_cover_gate_since_ms));
                 s_shelf_cover_gate = false;
                 return APP_REDRAW_PAGE;
             }
