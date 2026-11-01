@@ -5355,6 +5355,8 @@ static void scan_shelf_dir(app_ctx_t *ctx, const char *root, bool is_flash, nvs_
     memcpy(frames[0].path, root, root_len + 1);
     int depth = 0;
     int64_t last_poll_ms = 0;
+    const int64_t dir_start_ms = esp_timer_get_time() / 1000;
+    unsigned entries = 0, dirs = 0, files = 0;
     while (depth >= 0 && !*truncated) {
         // 触摸轮询走 I2C；逐目录项读会把手势轮询变成扫描主成本。限到 250ms 一次。
         // Touch polling uses I2C; doing it per entry makes gesture polling dominate the scan. Limit it to once per 250 ms.
@@ -5375,13 +5377,22 @@ static void scan_shelf_dir(app_ctx_t *ctx, const char *root, bool is_flash, nvs_
             continue;
         }
         if (ent->d_name[0] == '.') continue;
+        ++entries;
         char path[BOOK_STORE_PATH_MAX];
         int len = snprintf(path, sizeof(path), "%s/%s", frames[depth].path, ent->d_name);
         if (len < 0 || (size_t)len >= sizeof(path)) { *skipped = true; continue; }
         const int64_t file_start_ms=esp_timer_get_time()/1000;
+        const bool maybe_book = book_file_path_supported(path);
+        bool is_dir = ent->d_type == DT_DIR;
+        bool is_reg = ent->d_type == DT_REG;
         struct stat st;
-        if (stat(path, &st) != 0) { *unreadable = true; continue; }
-        if (S_ISDIR(st.st_mode)) {
+        if (!is_dir && !is_reg) {
+            if (stat(path, &st) != 0) { *unreadable = true; continue; }
+            is_dir = S_ISDIR(st.st_mode);
+            is_reg = S_ISREG(st.st_mode);
+        }
+        if (is_dir) {
+            ++dirs;
             if (!is_flash && depth==0 && !strcmp(root,app_settings_books_dir())) shelf_category_add(path);
             if (depth == BOOK_SCAN_DEPTH_LIMIT) { *skipped = true; continue; }
             DIR *child = opendir(path);
@@ -5391,9 +5402,11 @@ static void scan_shelf_dir(app_ctx_t *ctx, const char *root, bool is_flash, nvs_
             memcpy(frames[depth].path, path, (size_t)len + 1);
             continue;
         }
-        if (!S_ISREG(st.st_mode)) continue;
+        if (!is_reg) continue;
+        if (!maybe_book) continue;
+        ++files;
+        if (stat(path, &st) != 0) { *unreadable = true; continue; }
         const char *ext = strrchr(ent->d_name, '.');
-        if (!book_file_path_supported(path)) continue;
         // 显式移出书架的书不再列入；文件仍在存储卡上，随时可以重新读回书架。
         // Books the user removed stay off the shelf; the file stays on the card and reading it
         // again puts it back.
@@ -5431,6 +5444,8 @@ static void scan_shelf_dir(app_ctx_t *ctx, const char *root, bool is_flash, nvs_
     }
     for (int i = 0; i <= depth; ++i)
         if (frames[i].dir) closedir(frames[i].dir);
+    ESP_LOGI(TAG,"shelf scan dir root=%s entries=%u dirs=%u files=%u ms=%lld",
+             root,entries,dirs,files,(long long)(esp_timer_get_time()/1000-dir_start_ms));
     free(frames);
 }
 
