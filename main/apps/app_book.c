@@ -4210,7 +4210,15 @@ static bool present(app_ctx_t* ctx, app_redraw_t redraw) {
         if (redraw==APP_REDRAW_AREA && reader_status_visible()) {
             // 时钟单独短刷，不准备插图、不预排正文，也不累计正文全刷次数。
             // Update status alone, without image preparation, pagination, or reader cleanup counters.
+#if KIIKO_BOARD_METALIO47
+            // 关闭周期全刷时，分钟只做局部 DU，避免状态栏每分钟闪一次 GL16。
+            // With periodic cleanup off, update the clock strip with DU instead of a GL16 flash every minute.
+            enum EpdDrawError err = app_settings_reader_full_pages() == 0
+                ? update_display_area_diff_with(ctx->hl,&E0470_FOLLOW_WAVEFORM,MODE_DU,reader_status_area())
+                : update_display_area_diff_with(ctx->hl,&E0470_WAVEFORM,MODE_GL16,reader_status_area());
+#else
             enum EpdDrawError err=update_display_area_diff_with(ctx->hl,&E0470_WAVEFORM,MODE_GL16,reader_status_area());
+#endif
             if (err==EPD_DRAW_SUCCESS) s_reader_clock_minute=s_reader_clock_painted_minute;
             guard_draw_result(ctx->hl,err);
             return true;
