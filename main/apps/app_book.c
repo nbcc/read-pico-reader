@@ -350,7 +350,6 @@ static unsigned s_store_revision;
 static uint32_t s_progress_revision=UINT32_MAX;
 static bool s_shelf_cache_valid, s_cache_sd_present, s_cache_sd_mounted;
 static bool s_shelf_cover_gate;
-static int64_t s_shelf_cover_gate_since_ms;
 static uint8_t s_cache_shelf_style;
 static bool s_scan_pending, s_clear_confirm;
 static reader_panel_t s_reader_panel;
@@ -4193,10 +4192,7 @@ static enum EpdDrawError reader_soft_present(app_ctx_t* ctx,EpdRect area) {
 static bool present(app_ctx_t* ctx, app_redraw_t redraw) {
     // 扫描完成前不呈现空书架，避免先出占位页再整页重画。
     // Do not present an empty shelf before the scan finishes; avoid a placeholder page followed by a full repaint.
-    if (s_view == SHELF && s_scan_pending) {
-        ESP_LOGI(TAG,"shelf present deferred until scan");
-        return true;
-    }
+    if (s_view == SHELF && s_scan_pending) return true;
 #if KIIKO_BOARD_METALIO47
     if(s_view==READING&&s_reader_panel==READER_PANEL_ONLINE_FONTS){
         s_reader_panel_frame.valid=false;
@@ -5355,8 +5351,6 @@ static void scan_shelf_dir(app_ctx_t *ctx, const char *root, bool is_flash, nvs_
     memcpy(frames[0].path, root, root_len + 1);
     int depth = 0;
     int64_t last_poll_ms = 0;
-    const int64_t dir_start_ms = esp_timer_get_time() / 1000;
-    unsigned entries = 0, dirs = 0, files = 0;
     while (depth >= 0 && !*truncated) {
         // 触摸轮询走 I2C；逐目录项读会把手势轮询变成扫描主成本。限到 250ms 一次。
         // Touch polling uses I2C; doing it per entry makes gesture polling dominate the scan. Limit it to once per 250 ms.
@@ -5377,11 +5371,9 @@ static void scan_shelf_dir(app_ctx_t *ctx, const char *root, bool is_flash, nvs_
             continue;
         }
         if (ent->d_name[0] == '.') continue;
-        ++entries;
         char path[BOOK_STORE_PATH_MAX];
         int len = snprintf(path, sizeof(path), "%s/%s", frames[depth].path, ent->d_name);
         if (len < 0 || (size_t)len >= sizeof(path)) { *skipped = true; continue; }
-        const int64_t file_start_ms=esp_timer_get_time()/1000;
         const bool maybe_book = book_file_path_supported(path);
         bool is_dir = ent->d_type == DT_DIR;
         bool is_reg = ent->d_type == DT_REG;
@@ -5392,7 +5384,6 @@ static void scan_shelf_dir(app_ctx_t *ctx, const char *root, bool is_flash, nvs_
             is_reg = S_ISREG(st.st_mode);
         }
         if (is_dir) {
-            ++dirs;
             if (!is_flash && depth==0 && !strcmp(root,app_settings_books_dir())) shelf_category_add(path);
             if (depth == BOOK_SCAN_DEPTH_LIMIT) { *skipped = true; continue; }
             DIR *child = opendir(path);
@@ -5404,7 +5395,6 @@ static void scan_shelf_dir(app_ctx_t *ctx, const char *root, bool is_flash, nvs_
         }
         if (!is_reg) continue;
         if (!maybe_book) continue;
-        ++files;
         if (stat(path, &st) != 0) { *unreadable = true; continue; }
         const char *ext = strrchr(ent->d_name, '.');
         // 显式移出书架的书不再列入；文件仍在存储卡上，随时可以重新读回书架。
@@ -5440,12 +5430,9 @@ static void scan_shelf_dir(app_ctx_t *ctx, const char *root, bool is_flash, nvs_
         item->recent = item->has_progress ? p.last_open_s : 0;
         item->favorite = favorites && favorite_read_handle(favorites, item->path);
         s_shelf[s_count++] = candidate;
-        ESP_LOGI(TAG,"shelf file ms=%lld name=%s",(long long)(esp_timer_get_time()/1000-file_start_ms),item->name);
     }
     for (int i = 0; i <= depth; ++i)
         if (frames[i].dir) closedir(frames[i].dir);
-    ESP_LOGI(TAG,"shelf scan dir root=%s entries=%u dirs=%u files=%u ms=%lld",
-             root,entries,dirs,files,(long long)(esp_timer_get_time()/1000-dir_start_ms));
     free(frames);
 }
 
@@ -5530,8 +5517,6 @@ static bool shelf_backfill_read_books(bool* truncated) {
 }
 
 static void scan_shelf(app_ctx_t* ctx) {
-    const int64_t scan_start_ms=esp_timer_get_time()/1000;
-    int64_t roots_ms=scan_start_ms, dirs_ms=scan_start_ms, backfill_ms=scan_start_ms;
     const uint32_t progress_revision=book_progress_revision();
     shelf_category_init();
     for (int i=2;i<s_category_count;++i) s_categories[i].available=false;
@@ -5544,8 +5529,6 @@ static void scan_shelf(app_ctx_t* ctx) {
     book_store_root_t roots[BOOK_STORE_ROOT_MAX];
     int n = 0;
     esp_err_t root_err = book_store_roots(roots, &n);
-    roots_ms=esp_timer_get_time()/1000;
-    ESP_LOGI(TAG,"shelf scan roots ms=%lld roots=%d err=%d",(long long)(roots_ms-scan_start_ms),n,(int)root_err);
     bool truncated = false, unreadable = root_err != ESP_OK || book_store_roots_degraded(), skipped = false;
     nvs_handle_t favorites = 0;
     nvs_handle_t hidden = 0;
@@ -5560,8 +5543,6 @@ static void scan_shelf(app_ctx_t* ctx) {
         scan_shelf_dir(ctx, roots[i].path, roots[i].is_flash, favorites, hidden,
                        &truncated, &unreadable, &skipped);
     }
-    dirs_ms=esp_timer_get_time()/1000;
-    ESP_LOGI(TAG,"shelf scan dirs ms=%lld books=%d",(long long)(dirs_ms-roots_ms),s_count);
     if (ctx->request_app) {
         if (favorites) nvs_close(favorites);
         if (hidden) nvs_close(hidden);
@@ -5586,12 +5567,9 @@ static void scan_shelf(app_ctx_t* ctx) {
     // 补齐书根目录之外读过的书；显式移出书架的除外。
     // Backfill books read outside the roots, minus the ones removed from the shelf.
     (void)shelf_backfill_read_books(&truncated);
-    backfill_ms=esp_timer_get_time()/1000;
-    ESP_LOGI(TAG,"shelf scan backfill ms=%lld books=%d",(long long)(backfill_ms-dirs_ms),s_count);
     shelf_categories_recount();
     sort_shelf(ctx);
     if (s_view==SHELF) shelf_category_restore(ctx);
-    ESP_LOGI(TAG,"shelf scan sort ms=%lld",(long long)(esp_timer_get_time()/1000-backfill_ms));
     s_latest_path[0] = 0;
     char last_path[BOOK_STORE_PATH_MAX];
     if (book_progress_last_path(last_path, sizeof(last_path))) {
@@ -5615,16 +5593,12 @@ static void scan_shelf(app_ctx_t* ctx) {
     s_store_revision = book_store_revision();
     s_progress_revision = progress_revision;
     s_shelf_cache_valid = !unreadable && !truncated;
-    ESP_LOGI(TAG,"shelf scan done ms=%lld books=%d roots=%d",
-             (long long)(esp_timer_get_time()/1000-scan_start_ms),s_count,n);
     // 重扫后先准备当前页封面，整页等封面齐了再输出，避免先画占位再补封面。
     // After a rescan, prepare the visible covers first and present the whole page once they are ready.
     s_shelf_cover_gate = s_view == SHELF;
     if (s_shelf_cover_gate) {
-        s_shelf_cover_gate_since_ms=esp_timer_get_time()/1000;
         prepare_covers(ctx);
         (void)prepare_cover_batch(ctx, true);
-        ESP_LOGI(TAG,"shelf cover gate begin pending=%u",(unsigned)__builtin_popcount(s_cover_pending_mask));
         if (!s_cover_pending_mask) s_shelf_cover_gate = false;
     }
     ESP_LOGI(TAG, "shelf books=%d roots=%d", s_count, n);
@@ -7289,8 +7263,6 @@ static app_redraw_t action_at(app_ctx_t* ctx, uint16_t x, uint16_t y) {
     return APP_REDRAW_NONE;
 }
 static void on_enter(app_ctx_t* ctx) {
-    ESP_LOGI(TAG,"shelf enter begin cache=%d pending=%d rev=%u",
-             s_shelf_cache_valid,(int)s_scan_pending,book_store_revision());
     reader_indent_hold_cancel();
     s_shelf_key_mode=s_shelf_key_paint_pending=false;s_shelf_key_delta=s_shelf_key_pressed=0;
     shelf_category_init();
@@ -7360,7 +7332,6 @@ static void on_enter(app_ctx_t* ctx) {
                  s_cache_shelf_style == app_settings_shelf_style() &&
                  s_store_revision == book_store_revision();
     s_scan_pending = !reuse;
-    ESP_LOGI(TAG,"shelf enter reuse=%d scan_pending=%d",reuse,(int)s_scan_pending);
     if (reuse) {
         refresh_cached_progress(ctx);
         (void)open_requested_book(ctx);
@@ -8353,14 +8324,11 @@ static app_redraw_t on_tick(app_ctx_t* ctx) {
     if (s_shelf_cover_gate) {
         if (s_view != SHELF || ctx->request_app || ctx->request_menu || ctx->request_return ||
             (ctx->touch && ctx->touch->touched)) {
-            ESP_LOGI(TAG,"shelf cover gate cancel pending=%u",(unsigned)__builtin_popcount(s_cover_pending_mask));
             s_shelf_cover_gate = false;
         } else {
             prepare_covers(ctx);
             (void)prepare_cover_batch(ctx, false);
             if (!s_cover_pending_mask) {
-                ESP_LOGI(TAG,"shelf cover gate done ms=%lld",
-                         (long long)(esp_timer_get_time()/1000-s_shelf_cover_gate_since_ms));
                 s_shelf_cover_gate = false;
                 return APP_REDRAW_PAGE;
             }
