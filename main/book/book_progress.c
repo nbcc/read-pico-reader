@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include "esp_log.h"
 #include "nvs.h"
 
@@ -31,6 +32,8 @@ static const char* NS = "mt_books";
 #else
 static const char* NS = "rp_books";
 #endif
+// 打开时间与进度分开存，旧进度记录保持可读。/ Keep open time beside the record so legacy progress stays readable.
+static void opened_key(const char* key, char out[12]) { snprintf(out, 12, "o%.10s", key); }
 
 // 列表拓扑仅在 HTTP 停止并 join 后修改；HTTP 只原子标记已有节点。
 // Mutate list topology only after HTTP stops and joins; HTTP only atomically marks existing nodes.
@@ -108,6 +111,10 @@ bool book_progress_load(const char* path, uint32_t size, book_progress_t* out) {
     uint8_t data[RECORD_CAP];
     size_t len = sizeof(data);
     esp_err_t err = nvs_get_blob(h, key, data, &len);
+    char ekey[12];
+    opened_key(key, ekey);
+    uint32_t opened = 0;
+    if (err == ESP_OK) (void)nvs_get_u32(h, ekey, &opened);
     nvs_close(h);
     if (err != ESP_OK || !record_valid(data, len) ||
         strcmp((const char*)data + HEADER_SIZE, path) != 0 || get32(data + 4) != size ||
@@ -116,6 +123,7 @@ bool book_progress_load(const char* path, uint32_t size, book_progress_t* out) {
         .file_size = get32(data + 4), .chapter = (uint16_t)(data[8] | (data[9] << 8)),
         .byte_off = get32(data + 10), .px = data[14], .pct = data[15],
         .last_open_s = data[3] == 2 ? get32(data + 16) : 0,
+        .last_open_epoch = opened,
     };
     return true;
 }
@@ -143,6 +151,10 @@ esp_err_t book_progress_list(book_progress_visit_fn visit, void* ctx) {
             // Same validity gate as load; a bad record is skipped rather than ending the walk.
             if (nvs_get_blob(h, info.key, data, &len) == ESP_OK && record_valid(data, len) &&
                 data[14] >= BOOK_READER_PX_MIN && data[14] <= BOOK_READER_PX_MAX && data[15] <= 100) {
+                char ekey[12];
+                opened_key(info.key, ekey);
+                uint32_t opened = 0;
+                (void)nvs_get_u32(h, ekey, &opened);
                 book_progress_t value = {
                     .file_size = get32(data + 4),
                     .chapter = (uint16_t)(data[8] | (data[9] << 8)),
@@ -150,6 +162,7 @@ esp_err_t book_progress_list(book_progress_visit_fn visit, void* ctx) {
                     .px = data[14],
                     .pct = data[15],
                     .last_open_s = data[3] == 2 ? get32(data + 16) : 0,
+                    .last_open_epoch = opened,
                 };
                 more = visit((const char*)data + HEADER_SIZE, &value, ctx);
             }
@@ -189,6 +202,9 @@ esp_err_t book_progress_save(const char* path, const book_progress_t* progress) 
     memcpy(data + HEADER_SIZE, path, path_len);
     char key[11];
     make_key(path, key);
+    char ekey[12];
+    opened_key(key, ekey);
+    uint32_t opened = (uint32_t)time(NULL);
     nvs_handle_t h;
     esp_err_t err = nvs_open(NS, NVS_READWRITE, &h);
     if (err != ESP_OK) return warn_error(err);
@@ -204,6 +220,7 @@ esp_err_t book_progress_save(const char* path, const book_progress_t* progress) 
     if (err == ESP_OK) err = nvs_set_u32(h, "seq", ++sequence);
     if (err == ESP_OK) err = nvs_commit(h);
     put32(data + 16, sequence);
+    if (err == ESP_OK && opened) err = nvs_set_u32(h, ekey, opened);
     if (err == ESP_OK) err = nvs_set_blob(h, key, data, HEADER_SIZE + path_len);
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
@@ -215,11 +232,15 @@ esp_err_t book_progress_clear(const char* path) {
     if (!path_valid(path)) return ESP_ERR_INVALID_ARG;
     char key[11];
     make_key(path, key);
+    char ekey[12];
+    opened_key(key, ekey);
     nvs_handle_t h;
     esp_err_t err = nvs_open(NS, NVS_READWRITE, &h);
     if (err != ESP_OK) return warn_error(err);
     err = check_owner(h, key, path);
     if (err == ESP_OK) err = nvs_erase_key(h, key);
+    if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    if (err == ESP_OK) err = nvs_erase_key(h, ekey);
     if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
@@ -233,6 +254,8 @@ esp_err_t book_progress_forget(const char* path) {
         if (!strcmp(watch->path, path)) atomic_store(&watch->invalidated, true);
     char key[11];
     make_key(path, key);
+    char ekey[12];
+    opened_key(key, ekey);
     nvs_handle_t h;
     esp_err_t err = nvs_open(NS, NVS_READWRITE, &h);
     if (err != ESP_OK) return warn_error(err);
@@ -253,6 +276,8 @@ esp_err_t book_progress_forget(const char* path) {
         if (err == ESP_OK) err = nvs_commit(h);
     }
     if (err == ESP_OK) err = nvs_erase_key(h, key);
+    if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    if (err == ESP_OK) err = nvs_erase_key(h, ekey);
     if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);

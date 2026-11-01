@@ -139,6 +139,11 @@ static int book_order(const lock_book_t *a, const lock_book_t *b) {
     int title = strcmp(a->title, b->title);
     return title ? title : strcmp(a->path, b->path);
 }
+// 新记录用真实打开时间；旧记录没有时间戳时退回持久阅读序号。
+// New records use the real open time; legacy records without one fall back to the persistent reading sequence.
+static uint32_t progress_recent(const book_progress_t *progress) {
+    return progress->last_open_epoch ? progress->last_open_epoch : progress->last_open_s;
+}
 static bool collect_book(lock_library_t *library, const char *path,
                           const struct stat *st, const book_progress_t *saved) {
     const char *ext = strrchr(path, '.');
@@ -155,8 +160,8 @@ static bool collect_book(lock_library_t *library, const char *path,
     candidate.size = (uint32_t)st->st_size;
     candidate.modified = st->st_mtime;
     book_progress_t progress;
-    if (saved) candidate.recent = saved->last_open_s;
-    else if (book_progress_load(path, candidate.size, &progress)) candidate.recent = progress.last_open_s;
+    if (saved) candidate.recent = progress_recent(saved);
+    else if (book_progress_load(path, candidate.size, &progress)) candidate.recent = progress_recent(&progress);
     candidate.key = file_key(UINT64_C(14695981039346656037), path, st);
     candidate.key = hash_text(candidate.key, candidate.title);
     candidate.key = file_key(candidate.key, library->font_path,
@@ -247,7 +252,7 @@ static bool index_restore(lock_library_t *library) {
         bool saved=st.st_size>=0&&(uint64_t)st.st_size<=UINT32_MAX&&book_progress_load(old->path,(uint32_t)st.st_size,&progress);
         // 清进度可能让此前未进入前十五的书补位，必须重新扫描保证顺序。
         // Clearing progress can promote an uncached book; rescan to preserve exact ranking.
-        if(old->recent&&(!saved||progress.last_open_s<old->recent))return false;
+        if(old->recent&&(!saved||progress_recent(&progress)<old->recent))return false;
         collect_book(library,old->path,&st,saved?&progress:NULL);
     }
     library->count=s_library_root_count;

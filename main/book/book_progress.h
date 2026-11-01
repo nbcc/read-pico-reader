@@ -46,6 +46,8 @@ typedef struct {
     uint8_t pct;
     /// 持久阅读顺序；保留旧字段名，v1 记录读取为 0。/ Persistent reading order; legacy field name, v1 records load as zero.
     uint32_t last_open_s;
+    /// 最近打开的实际 Unix 时间；旧记录为 0。/ Actual Unix time of the last open; zero for legacy records.
+    uint32_t last_open_epoch;
 } book_progress_t;
 
 /// 校验版本、完整路径与文件大小后恢复；失败不改 out。/ Restore after version, full-path and size validation; leave out unchanged on failure.

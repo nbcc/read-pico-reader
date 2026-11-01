@@ -251,6 +251,7 @@ typedef struct {
     bool has_progress;
     uint8_t pct;
     uint32_t recent;
+    uint32_t opened;
     uint32_t added;
     bool selected, removed, search_match, favorite;
 } shelf_entry_t;
@@ -5251,11 +5252,11 @@ static int compare_books(const void* a, const void* b) {
     if (shelf_matches(x) != shelf_matches(y)) return shelf_matches(x) ? -1 : 1;
     if (x->favorite != y->favorite)
         return x->favorite ? -1 : 1;
-    // 最近顺序同时考虑打开与添加：读过的看打开时间，没读过的看文件添加时间。
-    // Recent order considers both opening and addition: opened books use last-open, unread books use file addition.
+    // 最近顺序同时考虑打开与添加：读过的看真实打开时间，没读过的看文件添加时间。
+    // Recent order considers both opening and addition: opened books use the real open time, unread books use file addition.
     if (s_recent_sort) {
-        const uint32_t x_time = x->recent > x->added ? x->recent : x->added;
-        const uint32_t y_time = y->recent > y->added ? y->recent : y->added;
+        const uint32_t x_time = x->opened > x->added ? x->opened : x->added;
+        const uint32_t y_time = y->opened > y->added ? y->opened : y->added;
         if (x_time != y_time) return x_time > y_time ? -1 : 1;
     }
     int name = strcasecmp(x->name, y->name);
@@ -5446,6 +5447,7 @@ static void scan_shelf_dir(app_ctx_t *ctx, const char *root, bool is_flash, nvs_
         item->pct = item->has_progress ? p.pct : 0;
         item->chapter = item->has_progress ? p.chapter : 0;
         item->recent = item->has_progress ? p.last_open_s : 0;
+        item->opened = item->has_progress ? p.last_open_epoch : 0;
         item->favorite = favorites && favorite_read_handle(favorites, item->path);
         s_shelf[s_count++] = candidate;
     }
@@ -5506,6 +5508,7 @@ static bool shelf_backfill_visit(const char* path, const book_progress_t* progre
     item->pct = progress->pct;
     item->chapter = progress->chapter;
     item->recent = progress->last_open_s;
+    item->opened = progress->last_open_epoch;
     item->search_match = read_pico_search_match(item->name, s_query);
     item->favorite = scan->favorites && favorite_read_handle(scan->favorites, item->path);
     s_shelf[s_count++] = candidate;
@@ -5640,10 +5643,12 @@ static void refresh_cached_progress(app_ctx_t* ctx) {
             book_progress_t progress;
             item->has_progress = book_progress_load(item->path, item->size, &progress);
             uint32_t next_recent=item->has_progress?progress.last_open_s:0;
-            recent_changed=item->recent!=next_recent;
+            uint32_t next_opened=item->has_progress?progress.last_open_epoch:0;
+            recent_changed=item->recent!=next_recent||item->opened!=next_opened;
             item->pct = item->has_progress ? progress.pct : 0;
             item->chapter = item->has_progress ? progress.chapter : 0;
             item->recent = next_recent;
+            item->opened = next_opened;
             copy_text(s_latest_path, sizeof(s_latest_path), latest);
             break;
         }
@@ -5696,7 +5701,7 @@ static void manage_apply(app_ctx_t* ctx) {
     for (int i = 0; i < s_count; ++i) {
         if (!strcmp(s_shelf[i].path, s_managed.path)) {
             if (s_file_removed) continue;
-            s_shelf[i].has_progress = false; s_shelf[i].pct = 0; s_shelf[i].chapter = 0; s_shelf[i].recent = 0;
+            s_shelf[i].has_progress = false; s_shelf[i].pct = 0; s_shelf[i].chapter = 0; s_shelf[i].recent = 0; s_shelf[i].opened = 0;
         }
         s_shelf[write++] = s_shelf[i];
     }
@@ -6908,7 +6913,7 @@ static void batch_apply(app_ctx_t* ctx) {
                 ++done; item.selected = false;
                 if (!unshelf) {
                     item.has_progress = false; item.pct = 0;
-                    item.chapter = 0; item.recent = 0;
+                    item.chapter = 0; item.recent = 0; item.opened = 0;
                 }
                 discard = discard || item.removed;
             } else ++failed;
