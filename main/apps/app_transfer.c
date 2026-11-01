@@ -139,6 +139,14 @@ static bool transfer_set_wallpaper(const char *path) {
     return app_settings_lock_style() == 1;
 }
 
+// 微信读书缓存提交只清旧进度，不会改 store revision；这里补一次目录变更通知。
+// WeRead cache commits clear old progress but do not bump the store revision; notify the shelf here.
+static esp_err_t transfer_weread_file_changed(const char *path) {
+    const esp_err_t err = book_progress_forget(path);
+    book_store_notify_changed();
+    return err;
+}
+
 void app_transfer_request_method_picker(void) {
     s_usb_requested = s_hotspot_requested = s_wifi_upload_requested = s_wifi_setup_requested = false;
     s_weread_requested = false;
@@ -338,7 +346,7 @@ static bool weread_start_session(void) {
         .file_limit = book_store_file_limit(&s_root),
         .free_bytes_cb = free_bytes,
         .free_bytes_ctx = &s_root,
-        .file_changed_cb = book_progress_forget,
+        .file_changed_cb = transfer_weread_file_changed,
         .file_deleted_cb = transfer_file_deleted,
         .file_moved_cb = transfer_file_moved,
         .wallpaper_set_cb = transfer_set_wallpaper,
