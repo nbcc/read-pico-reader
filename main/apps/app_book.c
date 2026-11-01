@@ -251,6 +251,7 @@ typedef struct {
     bool has_progress;
     uint8_t pct;
     uint32_t recent;
+    uint32_t added;
     bool selected, removed, search_match, favorite;
 } shelf_entry_t;
 
@@ -5240,7 +5241,13 @@ static int compare_books(const void* a, const void* b) {
     if (shelf_matches(x) != shelf_matches(y)) return shelf_matches(x) ? -1 : 1;
     if (x->favorite != y->favorite)
         return x->favorite ? -1 : 1;
-    if (s_recent_sort && x->recent != y->recent) return x->recent > y->recent ? -1 : 1;
+    // 最近顺序同时考虑打开与添加：读过的看打开时间，没读过的看文件添加时间。
+    // Recent order considers both opening and addition: opened books use last-open, unread books use file addition.
+    if (s_recent_sort) {
+        const uint32_t x_time = x->recent > x->added ? x->recent : x->added;
+        const uint32_t y_time = y->recent > y->added ? y->recent : y->added;
+        if (x_time != y_time) return x_time > y_time ? -1 : 1;
+    }
     int name = strcasecmp(x->name, y->name);
     return name ? name : strcmp(x->path, y->path);
 }
@@ -5422,6 +5429,7 @@ static void scan_shelf_dir(app_ctx_t *ctx, const char *root, bool is_flash, nvs_
         }
         item->search_match = read_pico_search_match(item->name, s_query);
         item->size = st.st_size;
+        item->added = st.st_mtime > 0 && (uint64_t)st.st_mtime <= UINT32_MAX ? (uint32_t)st.st_mtime : 0;
         item->is_flash = is_flash;
         book_progress_t p;
         item->has_progress = book_progress_load(item->path, item->size, &p);
@@ -5480,6 +5488,7 @@ static bool shelf_backfill_visit(const char* path, const book_progress_t* progre
         }
     }
     item->size = (uint32_t)st.st_size;
+    item->added = st.st_mtime > 0 && (uint64_t)st.st_mtime <= UINT32_MAX ? (uint32_t)st.st_mtime : 0;
     // 内置书根固定在 /flash 下，与 book_store.c 和 open_book 的前缀判断一致。
     // The internal root lives under /flash, matching the prefix test in book_store.c and open_book.
     item->is_flash = !strncmp(path, "/flash/", 7);
