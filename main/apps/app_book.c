@@ -349,6 +349,7 @@ static int64_t s_save_retry_ms;
 static unsigned s_store_revision;
 static uint32_t s_progress_revision=UINT32_MAX;
 static bool s_shelf_cache_valid, s_cache_sd_present, s_cache_sd_mounted;
+static bool s_shelf_cover_gate;
 static uint8_t s_cache_shelf_style;
 static bool s_scan_pending, s_clear_confirm;
 static reader_panel_t s_reader_panel;
@@ -5580,6 +5581,14 @@ static void scan_shelf(app_ctx_t* ctx) {
     s_store_revision = book_store_revision();
     s_progress_revision = progress_revision;
     s_shelf_cache_valid = !unreadable && !truncated;
+    // 重扫后先准备当前页封面，整页等封面齐了再输出，避免先画占位再补封面。
+    // After a rescan, prepare the visible covers first and present the whole page once they are ready.
+    s_shelf_cover_gate = s_view == SHELF;
+    if (s_shelf_cover_gate) {
+        prepare_covers(ctx);
+        (void)prepare_cover_batch(ctx, true);
+        if (!s_cover_pending_mask) s_shelf_cover_gate = false;
+    }
     ESP_LOGI(TAG, "shelf books=%d roots=%d", s_count, n);
 }
 
@@ -6018,7 +6027,7 @@ static app_redraw_t reader_return(app_ctx_t *ctx) {
     s_view = SHELF;
     s_reader_panel = READER_PANEL_NONE;
     return_to_cached_shelf(ctx);
-    return APP_REDRAW_PAGE;
+    return s_shelf_cover_gate ? APP_REDRAW_NONE : APP_REDRAW_PAGE;
 }
 
 static app_redraw_t toggle_reader_fullscreen(app_ctx_t* ctx) {
@@ -7262,6 +7271,7 @@ static void on_enter(app_ctx_t* ctx) {
     s_category_menu=false;
     s_reader_tap.pending = false;
     s_shelf_page_pending = false;
+    s_shelf_cover_gate = false;
     // 设置页试按的旧事件不得在开书后翻页。/ Discard remote tests from earlier pages before opening a book.
     ble_pt_event_t old_key;
     ble_pt_raw_t old_raw;
@@ -8325,6 +8335,20 @@ static app_redraw_t on_tick(app_ctx_t* ctx) {
     }
     app_redraw_t background = reader_background_tick();
     if (background != APP_REDRAW_NONE) return background;
+    if (s_shelf_cover_gate) {
+        if (s_view != SHELF || ctx->request_app || ctx->request_menu || ctx->request_return ||
+            (ctx->touch && ctx->touch->touched)) {
+            s_shelf_cover_gate = false;
+        } else {
+            prepare_covers(ctx);
+            (void)prepare_cover_batch(ctx, false);
+            if (!s_cover_pending_mask) {
+                s_shelf_cover_gate = false;
+                return APP_REDRAW_PAGE;
+            }
+            return APP_REDRAW_NONE;
+        }
+    }
     if (s_scan_pending && ctx->now_ms - s_poll_ms >= 500) {
         s_poll_ms = ctx->now_ms;
         read_pico_sd_info_t info = {0};
@@ -8333,6 +8357,8 @@ static app_redraw_t on_tick(app_ctx_t* ctx) {
         scan_shelf(ctx);
         if (ctx->request_app) return APP_REDRAW_NONE;
         (void)open_requested_book(ctx);
+        if (s_view != SHELF) s_shelf_cover_gate = false;
+        if (s_shelf_cover_gate) return APP_REDRAW_NONE;
         return APP_REDRAW_PAGE;
     }
     if ((s_view == SHELF || s_view == MANAGE) && !(ctx->touch && ctx->touch->touched)) {
