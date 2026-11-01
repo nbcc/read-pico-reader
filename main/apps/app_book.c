@@ -5354,8 +5354,17 @@ static void scan_shelf_dir(app_ctx_t *ctx, const char *root, bool is_flash, nvs_
     if (!frames[0].dir) { *unreadable = true; free(frames); return; }
     memcpy(frames[0].path, root, root_len + 1);
     int depth = 0;
+    int64_t last_poll_ms = 0;
     while (depth >= 0 && !*truncated) {
-        if (s_view == SHELF && app_poll_main_navigation(ctx)) break;
+        // 触摸轮询走 I2C；逐目录项读会把手势轮询变成扫描主成本。限到 50ms 一次。
+        // Touch polling uses I2C; doing it per entry makes gesture polling dominate the scan. Limit it to once per 50 ms.
+        if (s_view == SHELF) {
+            const int64_t now_ms = esp_timer_get_time() / 1000;
+            if (now_ms - last_poll_ms >= 50) {
+                last_poll_ms = now_ms;
+                if (app_poll_main_navigation(ctx)) break;
+            }
+        }
         errno = 0;
         struct dirent *ent = readdir(frames[depth].dir);
         if (!ent) {
