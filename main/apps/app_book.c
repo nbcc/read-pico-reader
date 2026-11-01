@@ -379,7 +379,7 @@ static int s_shelf_key_pressed,s_shelf_key_delta;
 static int64_t s_shelf_key_until;
 static int64_t s_reader_clock_minute = -1, s_reader_clock_painted_minute = -1;
 static bool s_reader_clock_pending;
-static char s_message[128], s_storage[128], s_path[BOOK_STORE_PATH_MAX], s_title[128];
+static char s_message[128], s_path[BOOK_STORE_PATH_MAX], s_title[128];
 static char s_book_title[128];
 static char s_chapter_heading_title[128], s_chapter_heading_label[32];
 static size_t s_chapter_lead_skip;
@@ -5555,14 +5555,7 @@ static void scan_shelf(app_ctx_t* ctx) {
     (void)nvs_open("rp_favs", NVS_READONLY, &favorites);
 #endif
     (void)nvs_open(SHELF_HIDDEN_NS, NVS_READONLY, &hidden);
-    s_storage[0] = 0;
     for (int i = 0; i < n; ++i) {
-        if (i == 0 || roots[i].is_flash || roots[i - 1].is_flash) {
-            char capacity[64];
-            snprintf(capacity, sizeof(capacity), "%s%s %.1f MB", s_storage[0] ? " · " : "",
-                     roots[i].is_flash ? "内置余" : "TF余", book_store_free_bytes(&roots[i]) / 1048576.0);
-            strncat(s_storage, capacity, sizeof(s_storage) - strlen(s_storage) - 1);
-        }
         if (s_view == SHELF && app_poll_main_navigation(ctx)) break;
         scan_shelf_dir(ctx, roots[i].path, roots[i].is_flash, favorites, hidden,
                        &truncated, &unreadable, &skipped);
@@ -5609,7 +5602,6 @@ static void scan_shelf(app_ctx_t* ctx) {
             }
         }
     }
-    if (!n) copy_text(s_storage, sizeof(s_storage), "存储不可用，请检查 TF 卡");
     if (truncated) snprintf(s_shelf_warning, sizeof(s_shelf_warning), "内存不足，仅列 %d 本；释放后重扫", s_count);
     else if (unreadable) copy_text(s_shelf_warning, sizeof(s_shelf_warning), "部分目录或文件不可读，请检查后重扫");
     else if (skipped) copy_text(s_shelf_warning, sizeof(s_shelf_warning), "部分文件过大或名称过长，未列入");
@@ -5674,18 +5666,6 @@ static void return_to_cached_shelf(app_ctx_t* ctx) {
     else scan_shelf(ctx);
 }
 
-static void refresh_capacity(void) {
-    book_store_root_t roots[BOOK_STORE_ROOT_MAX];
-    int count = 0;
-    s_storage[0] = 0;
-    book_store_roots(roots, &count);
-    for (int i = 0; i < count; ++i) {
-        if (i && !roots[i].is_flash && !roots[i - 1].is_flash) continue;
-        char line[64];
-        snprintf(line, sizeof(line), "%s%s %.1f MB", s_storage[0] ? " · " : "", roots[i].is_flash ? "内置余" : "TF余", book_store_free_bytes(&roots[i]) / 1048576.0);
-        strncat(s_storage, line, sizeof(s_storage) - strlen(s_storage) - 1);
-    }
-}
 static void manage_apply(app_ctx_t* ctx) {
     if (!strcmp(s_path, s_managed.path)) free_book();
     esp_err_t err;
@@ -5705,7 +5685,6 @@ static void manage_apply(app_ctx_t* ctx) {
             book_store_notify_changed();
             s_store_revision = book_store_revision();
             for (int i = 0; i < s_count; ++i) if (!strcmp(s_shelf[i].path, s_managed.path)) s_shelf[i].removed = true;
-            refresh_capacity();
         } else delete_retry_discard(s_managed.path);
     } else {
         pending_discard(s_managed.path);
@@ -6944,7 +6923,6 @@ static void batch_apply(app_ctx_t* ctx) {
         if (!discard) s_shelf[write++] = item;
     }
     s_count = write;
-    refresh_capacity();
     int leaf = ctx->leaf;
     sort_shelf(ctx);
     ctx->leaf = leaf < leaves() ? leaf : leaves() - 1;
@@ -7389,7 +7367,6 @@ static void on_enter(app_ctx_t* ctx) {
     } else {
         s_count = s_visible_count = 0;
         s_message[0] = 0;
-        s_storage[0] = 0;
         invalidate_covers();
         // 已指定文件可直接打开；书架目录留到真正进入书架时再扫描。
         // Open a requested file directly; scan the shelf only when it is actually shown.
@@ -7472,7 +7449,6 @@ static void book_on_media_lost(app_ctx_t* ctx) {
     s_pressed_control = -1;
     s_scan_pending = true;
     s_du_count = 0;
-    copy_text(s_storage, sizeof(s_storage), "TF 卡已移除");
     copy_text(s_message, sizeof(s_message), "TF 卡已移除");
 }
 static void book_on_media_ready(app_ctx_t* ctx) {
