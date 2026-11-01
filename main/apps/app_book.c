@@ -5378,6 +5378,7 @@ static void scan_shelf_dir(app_ctx_t *ctx, const char *root, bool is_flash, nvs_
         char path[BOOK_STORE_PATH_MAX];
         int len = snprintf(path, sizeof(path), "%s/%s", frames[depth].path, ent->d_name);
         if (len < 0 || (size_t)len >= sizeof(path)) { *skipped = true; continue; }
+        const int64_t file_start_ms=esp_timer_get_time()/1000;
         struct stat st;
         if (stat(path, &st) != 0) { *unreadable = true; continue; }
         if (S_ISDIR(st.st_mode)) {
@@ -5426,6 +5427,7 @@ static void scan_shelf_dir(app_ctx_t *ctx, const char *root, bool is_flash, nvs_
         item->recent = item->has_progress ? p.last_open_s : 0;
         item->favorite = favorites && favorite_read_handle(favorites, item->path);
         s_shelf[s_count++] = candidate;
+        ESP_LOGI(TAG,"shelf file ms=%lld name=%s",(long long)(esp_timer_get_time()/1000-file_start_ms),item->name);
     }
     for (int i = 0; i <= depth; ++i)
         if (frames[i].dir) closedir(frames[i].dir);
