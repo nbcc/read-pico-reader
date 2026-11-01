@@ -204,7 +204,10 @@ void ui_nav_status(uint8_t *fb) {
     if (gauge_percent >= 0) snprintf(percent, sizeof(percent), "%u%%", (unsigned)gauge_percent);
     // 按实际百分比宽度排列网络图标，留 10 像素间隔；墨色与电池相同。
     // Place the network marks 10 px before the measured percentage, using the battery ink.
-    const int percent_left = 595 - status_number_width(percent);
+    // 关闭百分比时把网络图标组右移，只保留电池图标。
+    // With the percentage hidden, move the network group right and keep only the battery icon.
+    const bool show_percent = app_settings_status_percent();
+    const int percent_left = show_percent ? 595 - status_number_width(percent) : 606;
     const int network_right = percent_left - 10;
     const int wifi_center = network_right - UI_NAV_NETWORK_ICON_PX / 2;
     const int bluetooth_center = wifi_center - (wifi_visible ? UI_NAV_NETWORK_ICON_PX + 8 : 0);
@@ -242,7 +245,8 @@ void ui_nav_status(uint8_t *fb) {
         ui_draw_icon(fb, 627, status_center_y, 22, UI_ICON_ZAP, UI_GRAY_WHITE);
 
     }
-    ui_text_fixed_vc(fb, 595, status_center_y, UI_STATUS_PERCENT_PX, percent, EPD_DRAW_ALIGN_RIGHT, false);
+    if (show_percent)
+        ui_text_fixed_vc(fb, 595, status_center_y, UI_STATUS_PERCENT_PX, percent, EPD_DRAW_ALIGN_RIGHT, false);
     ui_status_mark_visible(fb);
     s_power_signature=power_signature();
 }

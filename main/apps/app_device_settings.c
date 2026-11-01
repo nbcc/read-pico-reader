@@ -408,9 +408,9 @@ static int settings_main_row_height(void) {
 #define SETTINGS_ROW_H settings_main_row_height()
 #define SETTINGS_WIRELESS_ROWS 3
 #if KIIKO_BOARD_METALIO47
-#define SETTINGS_DISPLAY_ROWS 8
+#define SETTINGS_DISPLAY_ROWS 9
 #else
-#define SETTINGS_DISPLAY_ROWS 7
+#define SETTINGS_DISPLAY_ROWS 8
 #endif
 #define SETTINGS_PERSONAL_ROWS 4
 #if KIIKO_BOARD_METALIO47
@@ -425,6 +425,7 @@ static int settings_main_row_height(void) {
 // 设置行图标：32 像素盒，在行高 68 里垂直居中；墨色统一，避免一行一个灰度。
 // Setting row icons: a 32 px box centred in the 68 px row with one shared ink level.
 #define SETTINGS_UNLOCK_ICON 18
+#define SETTINGS_BATTERY_PERCENT_ICON 19
 #define SETTINGS_ICON_PX 32
 #if KIIKO_BOARD_METALIO47
 #define SETTINGS_ICON_INK UI_GRAY_BLACK
@@ -889,6 +890,7 @@ static void setting_icon(uint8_t *fb, int index, int cx, int cy) {
         UI_ICON_LOCK,              // 16 锁屏密码 / lock screen password
         UI_ICON_ROTATE_CW,         // 17 屏幕修复 / panel repair
         UI_ICON_LOCK,              // 18 双击解锁 / double-press unlock
+        UI_ICON_POWER,             // 19 状态栏电量百分比 / status battery percentage
     };
     if (index < 0 || index >= (int)(sizeof(icons) / sizeof(icons[0]))) return;
     ui_draw_icon(fb, cx, cy, SETTINGS_ICON_PX, icons[index], SETTINGS_ICON_INK);
@@ -937,6 +939,13 @@ static void setting_group(uint8_t *fb, int title_y, const char *title,
         if (icons[i] == SETTINGS_UNLOCK_ICON) {
             ui_text_vc(fb, 100, y + row_height / 2, 25, labels[i], EPD_DRAW_ALIGN_LEFT, false);
             settings_switch(fb, y + row_height / 2, app_settings_wake_presses() == 2);
+            continue;
+        }
+        if (icons[i] == SETTINGS_BATTERY_PERCENT_ICON) {
+            // 与双击解锁共用纯黑白开关，避免滚动差分时灰色轨道闪黑。
+            // Reuse the pure black/white switch so scroll differences never flash a gray track.
+            ui_text_vc(fb, 100, y + row_height / 2, 25, labels[i], EPD_DRAW_ALIGN_LEFT, false);
+            settings_switch(fb, y + row_height / 2, app_settings_status_percent());
             continue;
         }
         char shown[128]; snprintf(shown,sizeof(shown),"%s",values[i]);
@@ -1714,18 +1723,18 @@ static void render_content(app_ctx_t *ctx, uint8_t *fb) {
     unsigned minutes=app_settings_auto_lock_minutes();
     if(minutes)snprintf(idle,sizeof(idle),"%u 分钟",minutes);else strcpy(idle,"关闭");
 #if KIIKO_BOARD_METALIO47
-    const char *display_labels[]={"系统字体","系统对比度","主页刷新模式","首页强刷","自动休眠锁屏","双击解锁","关机睡眠","前光与振动"};
+    const char *display_labels[]={"系统字体","系统对比度","主页刷新模式","首页强刷","自动休眠锁屏","双击解锁","关机睡眠","前光与振动","状态栏电量"};
 #else
-    const char *display_labels[]={"系统字体","系统对比度","主页刷新模式","首页强刷","自动休眠锁屏","双击解锁","关机睡眠"};
+    const char *display_labels[]={"系统字体","系统对比度","主页刷新模式","首页强刷","自动休眠锁屏","双击解锁","关机睡眠","状态栏电量"};
 #endif
     const char *display_values[]={font_name,contrast,
         app_settings_main_refresh_mode()==APP_MAIN_REFRESH_FAST?"快刷":app_settings_main_refresh_mode()==APP_MAIN_REFRESH_WATER?"水波纹":"普通",
 #if KIIKO_BOARD_METALIO47
-        app_settings_home_full_refresh()?"开启":"关闭",idle,"",app_settings_staged_shutdown()?"浅睡后关机":"彻底断电","亮度与色温"};
-    const int display_icons[]={2,7,15,11,14,SETTINGS_UNLOCK_ICON,9,7};
+        app_settings_home_full_refresh()?"开启":"关闭",idle,"",app_settings_staged_shutdown()?"浅睡后关机":"彻底断电","亮度与色温",""};
+    const int display_icons[]={2,7,15,11,14,SETTINGS_UNLOCK_ICON,9,7,SETTINGS_BATTERY_PERCENT_ICON};
 #else
-        app_settings_home_full_refresh()?"开启":"关闭",idle,"",app_settings_staged_shutdown()?"先浅后深":"彻底断电"};
-    const int display_icons[]={2,7,15,11,14,SETTINGS_UNLOCK_ICON,9};
+        app_settings_home_full_refresh()?"开启":"关闭",idle,"",app_settings_staged_shutdown()?"先浅后深":"彻底断电",""};
+    const int display_icons[]={2,7,15,11,14,SETTINGS_UNLOCK_ICON,9,SETTINGS_BATTERY_PERCENT_ICON};
 #endif
     setting_group(fb,SETTINGS_DISPLAY_Y-49,"显示",SETTINGS_DISPLAY_Y,
                   display_icons,display_labels,display_values,SETTINGS_DISPLAY_ROWS);
@@ -2790,9 +2799,11 @@ static app_redraw_t on_gesture(app_ctx_t *ctx, const ui_gesture_event_t *ev) {
         else if(row==5)app_settings_set_wake_presses(app_settings_wake_presses()==2?1:2);
 #if KIIKO_BOARD_METALIO47
         else if(row==6)s_page=SETTINGS_POWER_SLEEP;
-        else s_page=SETTINGS_FRONTLIGHT;
+        else if(row==7)s_page=SETTINGS_FRONTLIGHT;
+        else app_settings_set_status_percent(!app_settings_status_percent());
 #else
-        else s_page=SETTINGS_POWER_SLEEP;
+        else if(row==6)s_page=SETTINGS_POWER_SLEEP;
+        else app_settings_set_status_percent(!app_settings_status_percent());
 #endif
         return APP_REDRAW_PAGE;
     }

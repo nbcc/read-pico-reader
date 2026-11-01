@@ -57,6 +57,7 @@ static bool reader_full_pages_valid(uint8_t pages) {
 #define NVS_KEY_DEVICE_NAME "dev_name"
 #define NVS_KEY_AVATAR "dev_avatar"
 #define NVS_KEY_STATUS_SIGNATURE "status_sig"
+#define NVS_KEY_STATUS_PERCENT "status_pct"
 #define NVS_KEY_FONT "font"
 #define NVS_KEY_SYS_FONT "sys_font"
 #define NVS_KEY_SYS_SIZE "sys_size"
@@ -122,6 +123,7 @@ static char s_device_name[64] = "kiikoread";
 #endif
 static char s_avatar[288];
 static char s_status_signature[96];
+static bool s_status_percent = true;
 static char s_font[FONT_PATH_MAX];
 static char s_system_font[FONT_PATH_MAX];
 static uint8_t s_system_size = 120;
@@ -276,6 +278,9 @@ void app_settings_init(void) {
     value_len = sizeof(s_status_signature);
     if (nvs_get_str(h, NVS_KEY_STATUS_SIGNATURE, s_status_signature, &value_len) != ESP_OK)
         s_status_signature[0] = 0;
+    uint8_t status_percent = 1;
+    if (nvs_get_u8(h, NVS_KEY_STATUS_PERCENT, &status_percent) == ESP_OK)
+        s_status_percent = status_percent != 0;
     size_t dir_len=sizeof(s_books_dir);
     if(nvs_get_str(h,NVS_KEY_BOOKS_DIR,s_books_dir,&dir_len)!=ESP_OK||!valid_media_dir(s_books_dir))
         strlcpy(s_books_dir,"/sdcard/books",sizeof(s_books_dir));
@@ -569,6 +574,12 @@ void app_settings_set_status_signature(const char *signature) {
     if (!signature || strnlen(signature, sizeof(s_status_signature)) >= sizeof(s_status_signature)) return;
     if (nvs_put_str(NVS_KEY_STATUS_SIGNATURE, signature))
         strlcpy(s_status_signature, signature, sizeof(s_status_signature));
+}
+bool app_settings_status_percent(void) { return s_status_percent; }
+void app_settings_set_status_percent(bool show) {
+    if (show == s_status_percent) return;
+    nvs_put_u8(NVS_KEY_STATUS_PERCENT, show ? 1 : 0);
+    s_status_percent = show;
 }
 
 const char* app_settings_font_path(void) {
@@ -1166,6 +1177,7 @@ esp_err_t app_settings_backup_save(void) {
                                 (s_ble_turner ? 8 : 0) |
                                 (s_reader_hold_refresh ? 16 : 0) |
                                 (s_reader_vertical_turn ? 32 : 0) |
+                                (!s_status_percent ? 64 : 0) |
                                 (app_settings_main_fast_refresh() ? 128 : 0);
     uint32_t profile_hash = backup_profile_checksum(&backup, extension[0], extension[1], extension[2], &profile);
     for (int i = 0; i < 4; ++i) profile.checksum[i] = (uint8_t)(profile_hash >> (i * 8));
@@ -1423,6 +1435,7 @@ esp_err_t app_settings_backup_restore(void) {
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_DEVICE_NAME, profile.device_name);
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_AVATAR, profile.avatar);
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_STATUS_SIGNATURE, profile.status_signature);
+    if (err == ESP_OK) err = nvs_set_u8(h, NVS_KEY_STATUS_PERCENT, (profile.home_full_refresh & 64) == 0);
     BACKUP_SET_U8(NVS_KEY_PICKUP, BK_PICKUP);
     BACKUP_SET_U8(NVS_KEY_SYS_SIZE, BK_SYS_SIZE);
     BACKUP_SET_U8(NVS_KEY_SYS_CONTRAST, BK_SYS_CONTRAST);
@@ -1484,6 +1497,7 @@ esp_err_t app_settings_backup_restore(void) {
     strlcpy(s_device_name, profile.device_name, sizeof(s_device_name));
     strlcpy(s_avatar, profile.avatar, sizeof(s_avatar));
     strlcpy(s_status_signature, profile.status_signature, sizeof(s_status_signature));
+    s_status_percent = (profile.home_full_refresh & 64) == 0;
     s_pickup_wake = f[BK_PICKUP];
     s_system_size = f[BK_SYS_SIZE];
     s_system_contrast = f[BK_SYS_CONTRAST];

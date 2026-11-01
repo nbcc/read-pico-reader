@@ -83,6 +83,9 @@ const char *app_settings_avatar_path(void);
 void app_settings_set_avatar_path(const char *path);
 const char *app_settings_status_signature(void);
 void app_settings_set_status_signature(const char *signature);
+/// 状态栏是否显示电量百分比；关闭后只留电池图标。/ Show battery percentage in the status bar; off leaves the icon only.
+bool app_settings_status_percent(void);
+void app_settings_set_status_percent(bool show);
 /// 空路径表示固件内建字体；非空为 SD 上的 TTF。/ Empty path is the built-in font; non-empty is a TTF on the SD card.
 const char* app_settings_font_path(void);
 void app_settings_set_font_path(const char* path);
