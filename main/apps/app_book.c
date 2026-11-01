@@ -7417,7 +7417,17 @@ static void book_on_media_lost(app_ctx_t* ctx) {
     copy_text(s_message, sizeof(s_message), "TF 卡已移除");
 }
 static void book_on_media_ready(app_ctx_t* ctx) {
-    (void)ctx;
+    // 浅睡恢复只重开文件句柄，不改变卡上目录；挂载状态、样式和存储版本一致时复用书架缓存。
+    // Light-sleep resume only reopens handles and leaves the directory unchanged; reuse the shelf
+    // when mount identity, style and store revision match.
+    read_pico_sd_info_t sd = {0};
+    if (read_pico_sd_get_info(&sd) == ESP_OK && s_shelf_cache_valid && !s_scan_pending &&
+        sd.present == s_cache_sd_present && sd.mounted == s_cache_sd_mounted &&
+        s_cache_shelf_style == app_settings_shelf_style() &&
+        s_store_revision == book_store_revision()) {
+        refresh_cached_progress(ctx);
+        return;
+    }
     s_shelf_cache_valid = false;
     if (s_view == SHELF) s_scan_pending = true;
 }
