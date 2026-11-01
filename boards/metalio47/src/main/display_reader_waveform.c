@@ -2,8 +2,8 @@
  * 中文：阅读采用默认灰阶表相序（厂家 2.0.76 起完整 GL48），等值保持由派生表保证。
  * English: Reading uses the default gray-table order (full GL48 since vendor 2.0.76)
  *         with equal pairs held by the derived table.
- * 用户2026-10-29：普通保留Moku GL37加六相白，速读所选DU加二相白并保留定稿。
- * User2026-10-29: ordinary retains Moku GL37 plus six whites; FastBW adds two whites to the selected DU and retains settling.
+ * 用户2026-10-29：普通保留Moku GL37加六相白，速读所选DU加四相白并以一相保持收尾。
+ * User2026-10-29: ordinary retains Moku GL37 plus six whites; FastBW adds four whites to the selected DU and ends with one hold phase.
  */
 #include "display_reader_waveform.h"
 #include "display_main_waveform.h"
@@ -24,7 +24,7 @@ const EpdWaveform* display_reader_text_waveform(void) {
 }
 
 const EpdWaveform* display_reader_fast_text_waveform(void) {
-    enum { EXTRA_WHITE=2, CAPACITY=32 };
+    enum { EXTRA_WHITE=4, EXTRA_HOLD=1, CAPACITY=32 };
     static uint8_t data[CAPACITY][16][4];
     static EpdWaveformPhases phases;
     static const EpdWaveformPhases* ranges[]={&phases};
@@ -50,12 +50,14 @@ const EpdWaveform* display_reader_fast_text_waveform(void) {
         ++hold;
     }
     const int drive=original->phases-hold;
+    if(drive+EXTRA_WHITE+hold+EXTRA_HOLD>CAPACITY)return NULL;
     memcpy(data,original->luts,(size_t)drive*16*4);
     memcpy(data+drive+EXTRA_WHITE,original->luts+(size_t)drive*16*4,(size_t)hold*16*4);
-    // 同一轮末尾只推目标白，包含未变化白底；黑字不补黑，最后仍按原表保持。
-    // In the same scan push only white targets, including unchanged blanks; never reinforce black, and finish on the original holds.
+    // 同一轮末尾只推目标白，包含未变化白底；黑字不补黑，最后留一相零动作让粒子沉降。
+    // In the same scan push only white targets, including unchanged blanks; never reinforce black, and end with one zero-action settle phase.
     for(int f=drive;f<drive+EXTRA_WHITE;++f)memset(data[f][15],0xaa,4);
-    phases=(EpdWaveformPhases){original->phases+EXTRA_WHITE,(const uint8_t*)data,NULL};
+    memset(data[drive+EXTRA_WHITE+hold],0,16*4);
+    phases=(EpdWaveformPhases){original->phases+EXTRA_WHITE+EXTRA_HOLD,(const uint8_t*)data,NULL};
     waveform=*base;
     waveform.num_modes=1;waveform.mode_data=modes;return &waveform;
 }
